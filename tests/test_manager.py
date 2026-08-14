@@ -96,6 +96,32 @@ class SshCommandTests(unittest.TestCase):
         self.assertIn("StrictHostKeyChecking=yes", commands[0])
         self.assertIn("StrictHostKeyChecking=accept-new", commands[1])
 
+    def test_configure_script_supports_common_package_and_service_managers(self):
+        for command in ("apt-get install", "apk add", "dnf install"):
+            self.assertIn(command, manager.CONFIGURE_SCRIPT)
+        for service_manager in ("systemctl", "rc-service"):
+            self.assertIn(service_manager, manager.CONFIGURE_SCRIPT)
+
+
+class DryRunTests(unittest.TestCase):
+    def test_upload_preview_does_not_call_scp_or_require_existing_key(self):
+        messages = []
+        fake = SimpleNamespace(
+            key_path=SimpleNamespace(get=lambda: "missing-preview-key.pub"),
+            dry_run=SimpleNamespace(get=lambda: True),
+            validated_remote_key_path=lambda: "/root/access.pub",
+            validated_timeout=lambda: 8,
+            host_address=lambda host: host["address"],
+            log=messages.append,
+        )
+        hosts = [{"address": "192.0.2.10", "user": "root", "port": 22}]
+
+        with patch.object(manager.subprocess, "run") as run:
+            manager.ProxmoxManager.upload_keys(fake, hosts)
+
+        run.assert_not_called()
+        self.assertTrue(any("PODGLĄD" in message for message in messages))
+
 
 class FormattingTests(unittest.TestCase):
     def test_host_label_includes_discovered_name(self):

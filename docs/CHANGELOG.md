@@ -2,6 +2,19 @@
 
 Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
+## 0.5.0 — w przygotowaniu
+
+### Dodano
+
+- tryb podglądu dla operacji modyfikujących hosty, kontenery i lokalne pliki;
+- instalację OpenSSH w kontenerach używających `apk` lub `dnf`, obok dotychczasowego `apt-get`;
+- uruchamianie usługi SSH przez OpenRC w kontenerach bez systemd;
+- zgodność odkrywania testów `unittest` z Test Explorerem w VS Code i Pythonem 3.14.
+
+### Zmieniono
+
+- lokalne ustawienia `.vscode` są ignorowane przez Git.
+
 ## 0.4.0 — 2026-08-14
 
 ### Dodano

@@ -12,7 +12,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 APP_TITLE = f"Proxmox LXC SSH Manager v{APP_VERSION}"
 OUTPUT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = OUTPUT_DIR / "ProxmoxLxcSshManager.config.json"
@@ -31,6 +31,7 @@ DEFAULT_SETTINGS = {
     "remote_key_directory": "/root",
     "connect_timeout_seconds": 8,
     "output_directory": "../shortcuts",
+    "dry_run": False,
 }
 
 DISCOVER_SCRIPT = r'''set -u
@@ -87,12 +88,17 @@ key_file=/tmp/proxmox_lxc_access_key.pub
 trap 'rm -f "$key_file"' EXIT
 
 if ! command -v sshd >/dev/null 2>&1; then
-    if ! command -v apt-get >/dev/null 2>&1; then
-        echo "ERROR: sshd is missing and this container does not use apt-get." >&2
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache openssh
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y openssh-server
+    else
+        echo "ERROR: sshd is missing and no supported package manager was found (apt-get, apk, dnf)." >&2
         exit 3
     fi
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
 fi
 
 install -d -o root -g root -m 700 /root/.ssh
@@ -104,8 +110,11 @@ chmod 600 /root/.ssh/authorized_keys
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd
+elif command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then
+    rc-update add sshd default >/dev/null 2>&1 || true
+    rc-service sshd start
 else
-    echo "ERROR: systemctl is unavailable; start the SSH service manually." >&2
+    echo "ERROR: no supported service manager was found (systemd or OpenRC)." >&2
     exit 4
 fi
 LXC_SCRIPT
@@ -275,6 +284,7 @@ class ProxmoxManager(tk.Tk):
         self.remote_key_directory = tk.StringVar(value=str(self.settings["remote_key_directory"]))
         self.connect_timeout = tk.StringVar(value=str(self.settings["connect_timeout_seconds"]))
         self.output_directory = tk.StringVar(value=str(self.settings["output_directory"]))
+        self.dry_run = tk.BooleanVar(value=bool(self.settings.get("dry_run", False)))
         self.status = tk.StringVar(value="Gotowy")
         self.container_count = tk.StringVar(value="Załadowane kontenery: 0")
         self.container_filter = tk.StringVar(value="Wszystkie")
@@ -416,6 +426,11 @@ class ProxmoxManager(tk.Tk):
         ]
         for column, button in enumerate(self.action_buttons):
             button.grid(row=0, column=column, sticky="ew", padx=3)
+        ttk.Checkbutton(
+            actions,
+            text="Tryb podglądu — nie wprowadzaj zmian",
+            variable=self.dry_run,
+        ).grid(row=1, column=0, columnspan=6, sticky="w", padx=3, pady=(8, 0))
 
         log_frame = ttk.LabelFrame(main, text="Dziennik", padding=8)
         log_frame.grid(row=5, column=0, sticky="nsew", pady=(10, 0))
@@ -458,6 +473,7 @@ class ProxmoxManager(tk.Tk):
         self.settings["remote_key_directory"] = self.remote_key_directory.get().strip()
         self.settings["connect_timeout_seconds"] = self.connect_timeout.get().strip()
         self.settings["output_directory"] = self.output_directory.get().strip()
+        self.settings["dry_run"] = self.dry_run.get()
         save_settings(self.settings)
 
     def on_close(self):
@@ -834,6 +850,11 @@ class ProxmoxManager(tk.Tk):
             self.log("Nie znaleziono nieaktualnych skrótów BAT.")
             return
         archive_dir = self.configured_output_directory() / "_archive" / datetime.now().strftime("%Y%m%d-%H%M%S")
+        if self.dry_run.get():
+            for source in stale:
+                self.log(f"PODGLĄD: zostałby zarchiwizowany {source.name} -> {archive_dir}")
+            self.log(f"PODGLĄD: zaplanowano archiwizację {len(stale)} nieaktualnych skrótów.")
+            return
         archive_dir.mkdir(parents=True, exist_ok=True)
         for index, source in enumerate(stale, start=1):
             self.set_progress(index - 1, len(stale), f"{index - 1}/{len(stale)}")
@@ -879,16 +900,20 @@ class ProxmoxManager(tk.Tk):
         key = Path(os.path.expandvars(os.path.expanduser(self.key_path.get().strip())))
         remote_key_path = self.validated_remote_key_path()
         timeout = self.validated_timeout()
-        if not key.is_file():
-            raise FileNotFoundError(f"Nie znaleziono klucza publicznego: {key}")
-        if not key.read_bytes().strip():
-            raise ValueError(f"Plik klucza jest pusty: {key}")
+        if not self.dry_run.get():
+            if not key.is_file():
+                raise FileNotFoundError(f"Nie znaleziono klucza publicznego: {key}")
+            if not key.read_bytes().strip():
+                raise ValueError(f"Plik klucza jest pusty: {key}")
 
         self.log("Wysyłanie klucza publicznego. SCP może otworzyć okno do wpisania hasła.")
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         for host_profile in hosts:
             host = self.host_address(host_profile)
             self.log(f"[{host}] Wysyłanie {key.name} -> {remote_key_path}")
+            if self.dry_run.get():
+                self.log(f"[{host}] PODGLĄD: pominięto wysyłanie klucza.")
+                continue
             result = subprocess.run(
                 [
                     "scp.exe", "-P", str(host_profile["port"]), "-o", f"ConnectTimeout={timeout}",
@@ -917,6 +942,10 @@ class ProxmoxManager(tk.Tk):
                 f"Istnieje klucz prywatny {private_key}, ale brakuje odpowiadającego pliku .pub. "
                 "Program nie nadpisze istniejącego klucza."
             )
+
+        if self.dry_run.get():
+            self.log(f"PODGLĄD: zostałaby utworzona para kluczy Ed25519: {private_key}")
+            return
 
         public_key.parent.mkdir(parents=True, exist_ok=True)
         username = os.environ.get("USERNAME", "user")
@@ -959,6 +988,13 @@ class ProxmoxManager(tk.Tk):
                 .replace("__SELECTED_CT_IDS__", ct_ids)
             )
             self.log(f"[{host}] Konfiguracja SSH w LXC: {ct_ids}")
+            if self.dry_run.get():
+                self.log(
+                    f"[{host}] PODGLĄD: klucz zostałby dodany do LXC {ct_ids}; "
+                    "sshd zostałby zainstalowany przez apt-get, apk lub dnf, jeśli go brakuje."
+                )
+                self.set_progress(host_index, len(grouped), f"{host_index}/{len(grouped)}")
+                continue
             result = run_ssh_script(host, configure_script, host_profile["user"], host_profile["port"], timeout)
             output = result.stdout.decode("utf-8", errors="replace").strip()
             if output:
@@ -973,7 +1009,8 @@ class ProxmoxManager(tk.Tk):
         created = 0
         lxc_user = self.validated_user("lxc_user")
         output_dir = self.configured_output_directory()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if not self.dry_run.get():
+            output_dir.mkdir(parents=True, exist_ok=True)
         for index, container in enumerate(containers, start=1):
             self.set_progress(index - 1, len(containers), f"{index - 1}/{len(containers)}")
             host = container["host"]
@@ -994,13 +1031,16 @@ class ProxmoxManager(tk.Tk):
                 f'start "" powershell.exe -NoExit -Command '
                 f'"$Host.UI.RawUI.WindowTitle = \'{title}\'; ssh {lxc_user}@{ip}"\r\n'
             )
-            (output_dir / filename).write_text(content, encoding="ascii", errors="replace", newline="")
-            container["bat"] = True
+            if not self.dry_run.get():
+                (output_dir / filename).write_text(content, encoding="ascii", errors="replace", newline="")
+                container["bat"] = True
             created += 1
-            self.log(f"Utworzono: {filename} -> {ip}")
+            prefix = "PODGLĄD: powstałby" if self.dry_run.get() else "Utworzono"
+            self.log(f"{prefix}: {filename} -> {ip}")
             self.set_progress(index, len(containers), f"{index}/{len(containers)}")
         self.log_queue.put(("refresh_containers", None))
-        self.log(f"Gotowe: utworzono {created} skrótów w {output_dir}")
+        action = "zaplanowano" if self.dry_run.get() else "utworzono"
+        self.log(f"Gotowe: {action} {created} skrótów w {output_dir}")
 
     def run_all(self, hosts, containers):
         selected_addresses = {container["host"] for container in containers}
