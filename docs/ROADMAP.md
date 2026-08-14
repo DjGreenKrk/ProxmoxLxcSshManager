@@ -1,9 +1,21 @@
 # Plan rozwoju
 
-## Najbliższe usprawnienia
+## 0.6.0 — interfejs i dystrybucja
 
-- pasek postępu i anulowanie kolejnych operacji;
-- przygotowanie pojedynczego pliku EXE.
+- przebudowa GUI z czytelnym podziałem na hosty, kontenery i operacje;
+- większa przestrzeń robocza dla tabeli LXC oraz responsywne skalowanie okna;
+- wyróżnienie głównego przepływu i uporządkowanie operacji dodatkowych;
+- licznik zaznaczonych hostów i kontenerów;
+- czytelniejsze stany pracy, błędów i trybu podglądu;
+- czyszczenie oraz kopiowanie dziennika z poziomu GUI;
+- anulowanie kolejnych etapów długiej operacji;
+- przygotowanie pojedynczego pliku EXE;
+- testy regresji logiki interfejsu i pakowania.
+
+## Później
+
+- podpisywanie wydań dla Windows;
+- opcjonalny instalator zamiast wersji przenośnej.
 
 ## Zasady bezpieczeństwa
 
