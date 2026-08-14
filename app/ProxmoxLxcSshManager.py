@@ -153,10 +153,11 @@ def run_ssh_script(host, script, user="root", timeout=8):
     )
 
 
-def check_ssh_access(host, user="root", timeout=8):
+def check_ssh_access(host, user="root", timeout=8, accept_new=False):
+    host_key_policy = "accept-new" if accept_new else "yes"
     command = [
         "ssh.exe", "-T", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
-        "-o", "ConnectionAttempts=1", "-o", "StrictHostKeyChecking=yes",
+        "-o", "ConnectionAttempts=1", "-o", f"StrictHostKeyChecking={host_key_policy}",
         f"{user}@{host}", "exit",
     ]
     result = subprocess.run(
@@ -314,7 +315,8 @@ class ProxmoxManager(tk.Tk):
         container_footer.columnconfigure(0, weight=1)
         ttk.Label(container_footer, textvariable=self.container_count).grid(row=0, column=0, sticky="w")
         ttk.Button(container_footer, text="Sprawdź SSH", command=lambda: self.start_task(self.check_container_ssh, require_containers=True)).grid(row=0, column=1, padx=4)
-        ttk.Button(container_footer, text="Zaznacz widoczne LXC", command=self.select_all_containers).grid(row=0, column=2, sticky="e")
+        ttk.Button(container_footer, text="Zaufaj nowym kluczom", command=lambda: self.start_task(self.trust_container_host_keys, require_containers=True)).grid(row=0, column=2, padx=4)
+        ttk.Button(container_footer, text="Zaznacz widoczne LXC", command=self.select_all_containers).grid(row=0, column=3, sticky="e")
 
         actions = ttk.LabelFrame(main, text="Operacje", padding=8)
         actions.grid(row=4, column=0, sticky="ew", pady=(10, 0))
@@ -577,6 +579,13 @@ class ProxmoxManager(tk.Tk):
         self.log("Wszystkie zaznaczone hosty przeszły test.")
 
     def check_container_ssh(self, _hosts, containers):
+        self._check_container_ssh(containers, accept_new=False)
+
+    def trust_container_host_keys(self, _hosts, containers):
+        self.log("Akceptowanie wyłącznie nowych fingerprintów SSH; zmienione klucze nadal będą odrzucone.")
+        self._check_container_ssh(containers, accept_new=True)
+
+    def _check_container_ssh(self, containers, accept_new=False):
         lxc_user = self.validated_user("lxc_user")
         timeout = self.validated_timeout()
         candidates = [record for record in containers if record["status"] == "running" and record["ip"]]
@@ -592,7 +601,7 @@ class ProxmoxManager(tk.Tk):
         completed = 0
         with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as executor:
             futures = {
-                executor.submit(check_ssh_access, record["ip"], lxc_user, timeout): record
+                executor.submit(check_ssh_access, record["ip"], lxc_user, timeout, accept_new): record
                 for record in candidates
             }
             for future in as_completed(futures):

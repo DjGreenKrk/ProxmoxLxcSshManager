@@ -17,6 +17,7 @@ Aktualna wersja: **0.2.0**
 - pobieranie i selekcja kontenerów LXC;
 - diagnostykę połączenia z hostami Proxmox i dostępności `pct`;
 - równoległe sprawdzanie dostępu SSH do wybranych LXC;
+- jawne dodawanie nowych fingerprintów LXC do lokalnego `known_hosts`;
 - filtrowanie kontenerów według nazwy, statusu SSH i obecności skrótu BAT;
 - pasek postępu dla dłuższych operacji;
 - instalowanie oraz uruchamianie serwera SSH w wybranych LXC;
@@ -51,6 +52,10 @@ Plik jest pomijany przez Git, ponieważ może zawierać adresy i ścieżki użyt
 3. Wyślij klucz na hosty.
 4. Załaduj kontenery i zaznacz wybrane LXC.
 5. Skonfiguruj SSH i wygeneruj skróty BAT.
+
+Wyniki diagnostyki są bieżącym stanem sesji i nie są zapisywane w configu.
+Przycisk `Zaufaj nowym kluczom` używa polityki OpenSSH `accept-new`: zapisuje
+nowe fingerprinty, ale odrzuca klucze znanych hostów, które uległy zmianie.
 
 Wygenerowane skróty trafiają domyślnie do katalogu `shortcuts`.
 
