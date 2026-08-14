@@ -5,3 +5,4 @@ shortcuts/*
 # Python
 __pycache__/
 *.py[cod]
+.vscode/*

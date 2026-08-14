@@ -2,6 +2,24 @@
 
 Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
+## 0.5.0 — 2026-08-14
+
+### Dodano
+
+- tryb podglądu dla operacji modyfikujących hosty, kontenery i lokalne pliki;
+- instalację OpenSSH w kontenerach używających `apk` lub `dnf`, obok dotychczasowego `apt-get`;
+- uruchamianie usługi SSH przez OpenRC w kontenerach bez systemd;
+- zgodność odkrywania testów `unittest` z Test Explorerem w VS Code i Pythonem 3.14.
+
+### Zmieniono
+
+- lokalne ustawienia `.vscode` są ignorowane przez Git.
+
+### Naprawiono
+
+- pojedynczy kontener LXC nie może już bezterminowo blokować ładowania, diagnostyki ani konfiguracji; `pct exec` i lokalne procesy SSH mają twarde limity czasu;
+- diagnostyka automatycznie ponawia sekwencyjnie pierwszy test SSH zakończony timeoutem, ograniczając fałszywe alarmy podczas równoległego sprawdzania wielu LXC.
+
 ## 0.4.0 — 2026-08-14
 
 ### Dodano

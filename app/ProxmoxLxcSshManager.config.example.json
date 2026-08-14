@@ -20,5 +20,6 @@
   ],
   "remote_key_directory": "/root",
   "connect_timeout_seconds": 8,
-  "output_directory": "../shortcuts"
+  "output_directory": "../shortcuts",
+  "dry_run": false
 }

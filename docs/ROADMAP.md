@@ -2,8 +2,6 @@
 
 ## Najbliższe usprawnienia
 
-- tryb podglądu bez wprowadzania zmian;
-- obsługa instalacji SSH w systemach używających `apk` i `dnf`;
 - pasek postępu i anulowanie kolejnych operacji;
 - przygotowanie pojedynczego pliku EXE.
 
