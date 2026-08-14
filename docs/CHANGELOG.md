@@ -2,6 +2,24 @@
 
 Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 — 2026-08-14
+
+### Dodano
+
+- test połączenia SSH z hostami Proxmox oraz dostępności polecenia `pct`;
+- kolumny `SSH` i `BAT` na liście kontenerów;
+- równoległe sprawdzanie dostępu SSH do zaznaczonych LXC;
+- wyszukiwanie kontenerów po hoście, CTID, nazwie, statusie i adresie;
+- osobne filtry dla działającego SSH, nieznanego fingerprintu, braku autoryzacji, niedostępnej usługi, nietestowanych LXC i braku BAT;
+- pasek postępu dla operacji wykonywanych na wielu hostach lub kontenerach.
+- jawną akcję dodawania nowych fingerprintów SSH do lokalnego `known_hosts`.
+
+### Zmieniono
+
+- pełna procedura weryfikuje dostęp SSH po jego skonfigurowaniu;
+- techniczna nazwa pliku tymczasowego w LXC jest neutralna i niezależna od użytkownika.
+- wyniki diagnostyki pozostają stanem bieżącej sesji, aby nie prezentować nieaktualnego cache jako aktualnego wyniku.
+
 ## 0.1.0 — 2026-08-14
 
 Pierwsza wersjonowana wersja aplikacji.

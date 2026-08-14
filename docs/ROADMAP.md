@@ -2,10 +2,6 @@
 
 ## Najbliższe usprawnienia
 
-- test połączenia z hostem, dostępności `pct` i zdalnego klucza;
-- kolumna ze stanem usługi SSH w każdym LXC;
-- filtry kontenerów według hosta, nazwy, CTID, statusu i SSH;
-- zaznaczanie kontenerów bez SSH lub bez skrótu BAT;
 - wykrywanie nieaktualnych skrótów BAT i bezpieczne proponowanie ich usunięcia;
 - obsługa wielu prefiksów lub podsieci LXC;
 - oddzielny użytkownik i port SSH dla każdego hosta;
