@@ -5,11 +5,12 @@ import re
 import subprocess
 import threading
 import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 APP_TITLE = f"Proxmox LXC SSH Manager v{APP_VERSION}"
 OUTPUT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = OUTPUT_DIR / "ProxmoxLxcSshManager.config.json"
@@ -67,7 +68,7 @@ for ct in __SELECTED_CT_IDS__; do
         continue
     fi
 
-    if ! pct push "$ct" "$public_key_file" /tmp/julek_key.pub; then
+    if ! pct push "$ct" "$public_key_file" /tmp/proxmox_lxc_access_key.pub; then
         echo "ERROR: Could not copy the public key to LXC $ct." >&2
         failed=1
         continue
@@ -75,7 +76,7 @@ for ct in __SELECTED_CT_IDS__; do
 
     if pct exec "$ct" -- bash -s <<'LXC_SCRIPT'
 set -eu
-key_file=/tmp/julek_key.pub
+key_file=/tmp/proxmox_lxc_access_key.pub
 trap 'rm -f "$key_file"' EXIT
 
 if ! command -v sshd >/dev/null 2>&1; then
@@ -152,6 +153,29 @@ def run_ssh_script(host, script, user="root", timeout=8):
     )
 
 
+def check_ssh_access(host, user="root", timeout=8):
+    command = [
+        "ssh.exe", "-T", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
+        "-o", "ConnectionAttempts=1", "-o", "StrictHostKeyChecking=yes",
+        f"{user}@{host}", "exit",
+    ]
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    output = result.stdout.decode("utf-8", errors="replace")
+    if result.returncode == 0:
+        return "działa", output
+    lowered = output.lower()
+    if "host key verification failed" in lowered or "no host key is known" in lowered:
+        return "nieznany host", output
+    if "permission denied" in lowered:
+        return "brak autoryzacji", output
+    return "niedostępny", output
+
+
 def safe_filename_part(value):
     value = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", value).rstrip(" .")
     return value or "unnamed"
@@ -166,6 +190,7 @@ class ProxmoxManager(tk.Tk):
         self.log_queue = queue.Queue()
         self.worker_running = False
         self.container_records = {}
+        self.loaded_containers = []
         self.settings = load_settings()
         self.hosts = self.settings["hosts"]
         self.key_path = tk.StringVar(value=str(self.settings["public_key"]))
@@ -178,6 +203,9 @@ class ProxmoxManager(tk.Tk):
         self.output_directory = tk.StringVar(value=str(self.settings["output_directory"]))
         self.status = tk.StringVar(value="Gotowy")
         self.container_count = tk.StringVar(value="Załadowane kontenery: 0")
+        self.container_filter = tk.StringVar(value="Wszystkie")
+        self.container_search = tk.StringVar()
+        self.progress_text = tk.StringVar()
         self._build_ui()
         self._refresh_hosts()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -196,11 +224,12 @@ class ProxmoxManager(tk.Tk):
         hosts_frame.rowconfigure(0, weight=1)
 
         self.host_list = tk.Listbox(hosts_frame, selectmode=tk.EXTENDED, height=6)
-        self.host_list.grid(row=0, column=0, rowspan=4, sticky="nsew", padx=(0, 8))
+        self.host_list.grid(row=0, column=0, rowspan=5, sticky="nsew", padx=(0, 8))
         ttk.Button(hosts_frame, text="Dodaj host", command=self.add_host).grid(row=0, column=1, sticky="ew", pady=2)
         ttk.Button(hosts_frame, text="Usuń host", command=self.remove_hosts).grid(row=1, column=1, sticky="ew", pady=2)
         ttk.Button(hosts_frame, text="Zaznacz wszystkie", command=self.select_all).grid(row=2, column=1, sticky="ew", pady=2)
         ttk.Button(hosts_frame, text="Załaduj kontenery", command=lambda: self.start_task(self.load_containers)).grid(row=3, column=1, sticky="ew", pady=2)
+        ttk.Button(hosts_frame, text="Testuj hosty", command=lambda: self.start_task(self.test_hosts)).grid(row=4, column=1, sticky="ew", pady=2)
 
         key_frame = ttk.LabelFrame(main, text="Klucz publiczny SSH", padding=8)
         key_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -235,13 +264,30 @@ class ProxmoxManager(tk.Tk):
         containers_frame = ttk.LabelFrame(main, text="Kontenery — zaznacz LXC do obsługi", padding=8)
         containers_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
         containers_frame.columnconfigure(0, weight=1)
-        containers_frame.rowconfigure(0, weight=1)
+        containers_frame.rowconfigure(1, weight=1)
+        filter_frame = ttk.Frame(containers_frame)
+        filter_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        filter_frame.columnconfigure(1, weight=1)
+        ttk.Label(filter_frame, text="Szukaj:").grid(row=0, column=0, padx=(0, 6))
+        search_entry = ttk.Entry(filter_frame, textvariable=self.container_search)
+        search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        ttk.Label(filter_frame, text="Filtr:").grid(row=0, column=2, padx=(0, 6))
+        filter_box = ttk.Combobox(
+            filter_frame,
+            textvariable=self.container_filter,
+            values=("Wszystkie", "Uruchomione", "SSH działa", "Bez SSH", "Bez BAT"),
+            state="readonly",
+            width=15,
+        )
+        filter_box.grid(row=0, column=3)
+        search_entry.bind("<KeyRelease>", lambda _event: self.apply_container_filter())
+        filter_box.bind("<<ComboboxSelected>>", lambda _event: self.apply_container_filter())
         style = ttk.Style(self)
         style.configure("Containers.Treeview", foreground="#000000", background="#ffffff", fieldbackground="#ffffff", rowheight=22)
         style.map("Containers.Treeview", foreground=[("selected", "#ffffff")], background=[("selected", "#0078d7")])
         self.container_tree = ttk.Treeview(
             containers_frame,
-            columns=("host", "ct", "name", "status", "ip"),
+            columns=("host", "ct", "name", "status", "ip", "ssh", "bat"),
             show="headings",
             selectmode="extended",
             height=8,
@@ -253,19 +299,22 @@ class ProxmoxManager(tk.Tk):
             "name": ("Nazwa LXC", 220),
             "status": ("Status", 80),
             "ip": ("Adres IP", 140),
+            "ssh": ("SSH", 115),
+            "bat": ("BAT", 55),
         }
         for column, (label, width) in headings.items():
             self.container_tree.heading(column, text=label)
             self.container_tree.column(column, width=width, anchor="w")
         container_scroll = ttk.Scrollbar(containers_frame, orient="vertical", command=self.container_tree.yview)
         self.container_tree.configure(yscrollcommand=container_scroll.set)
-        self.container_tree.grid(row=0, column=0, sticky="nsew")
-        container_scroll.grid(row=0, column=1, sticky="ns")
+        self.container_tree.grid(row=1, column=0, sticky="nsew")
+        container_scroll.grid(row=1, column=1, sticky="ns")
         container_footer = ttk.Frame(containers_frame)
-        container_footer.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        container_footer.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         container_footer.columnconfigure(0, weight=1)
         ttk.Label(container_footer, textvariable=self.container_count).grid(row=0, column=0, sticky="w")
-        ttk.Button(container_footer, text="Zaznacz wszystkie LXC", command=self.select_all_containers).grid(row=0, column=1, sticky="e")
+        ttk.Button(container_footer, text="Sprawdź SSH", command=lambda: self.start_task(self.check_container_ssh, require_containers=True)).grid(row=0, column=1, padx=4)
+        ttk.Button(container_footer, text="Zaznacz widoczne LXC", command=self.select_all_containers).grid(row=0, column=2, sticky="e")
 
         actions = ttk.LabelFrame(main, text="Operacje", padding=8)
         actions.grid(row=4, column=0, sticky="ew", pady=(10, 0))
@@ -292,7 +341,13 @@ class ProxmoxManager(tk.Tk):
         self.log_box.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
 
-        ttk.Label(main, textvariable=self.status, anchor="w").grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        status_frame = ttk.Frame(main)
+        status_frame.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        status_frame.columnconfigure(0, weight=1)
+        ttk.Label(status_frame, textvariable=self.status, anchor="w").grid(row=0, column=0, sticky="ew")
+        self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", length=220)
+        self.progress_bar.grid(row=0, column=1, padx=(8, 6))
+        ttk.Label(status_frame, textvariable=self.progress_text, width=14, anchor="e").grid(row=0, column=2)
 
     def _refresh_hosts(self):
         self.host_list.delete(0, tk.END)
@@ -302,6 +357,7 @@ class ProxmoxManager(tk.Tk):
         if hasattr(self, "container_tree"):
             self.container_tree.delete(*self.container_tree.get_children())
             self.container_records.clear()
+            self.loaded_containers.clear()
             self.container_count.set("Załadowane kontenery: 0")
 
     def _persist(self):
@@ -347,6 +403,25 @@ class ProxmoxManager(tk.Tk):
 
     def select_all_containers(self):
         self.container_tree.selection_set(self.container_tree.get_children())
+
+    def apply_container_filter(self):
+        phrase = self.container_search.get().strip().lower()
+        selected_filter = self.container_filter.get()
+        visible = []
+        for record in self.loaded_containers:
+            searchable = " ".join(str(record.get(key, "")) for key in ("host", "ct", "name", "status", "ip", "ssh")).lower()
+            if phrase and phrase not in searchable:
+                continue
+            if selected_filter == "Uruchomione" and record["status"] != "running":
+                continue
+            if selected_filter == "SSH działa" and record.get("ssh") != "działa":
+                continue
+            if selected_filter == "Bez SSH" and record.get("ssh") in {"działa", "—"}:
+                continue
+            if selected_filter == "Bez BAT" and record.get("bat"):
+                continue
+            visible.append(record)
+        self._render_container_records(visible)
 
     def choose_key(self):
         selected = filedialog.askopenfilename(
@@ -395,6 +470,8 @@ class ProxmoxManager(tk.Tk):
         self._persist()
         self.worker_running = True
         self.status.set("Praca w toku…")
+        self.progress_bar.configure(value=0, maximum=1)
+        self.progress_text.set("")
         for button in self.action_buttons:
             button.configure(state="disabled")
 
@@ -430,6 +507,12 @@ class ProxmoxManager(tk.Tk):
                         button.configure(state="normal")
                 elif kind == "containers":
                     self.show_container_records(value)
+                elif kind == "refresh_containers":
+                    self.apply_container_filter()
+                elif kind == "progress":
+                    current, total, label = value
+                    self.progress_bar.configure(maximum=max(total, 1), value=current)
+                    self.progress_text.set(label or f"{current}/{total}")
         except queue.Empty:
             pass
         self.after(100, self._drain_log_queue)
@@ -441,7 +524,8 @@ class ProxmoxManager(tk.Tk):
         discover_script = DISCOVER_SCRIPT.replace("__LXC_IP_PREFIX__", ip_prefix)
         records = []
 
-        for host in hosts:
+        for host_index, host in enumerate(hosts, start=1):
+            self.set_progress(host_index - 1, len(hosts), f"{host_index - 1}/{len(hosts)}")
             self.log(f"[{host}] Ładowanie listy kontenerów…")
             result = run_ssh_script(host, discover_script, proxmox_user, timeout)
             output = result.stdout.decode("utf-8", errors="replace")
@@ -457,24 +541,107 @@ class ProxmoxManager(tk.Tk):
                         self.log(f"[{host}] Pominięto nieznaną odpowiedź: {row}")
                     continue
                 ct_id, name, status, ip = match.groups()
-                records.append({"host": host, "ct": ct_id, "name": name, "status": status, "ip": ip or ""})
+                record = {
+                    "host": host,
+                    "ct": ct_id,
+                    "name": name,
+                    "status": status,
+                    "ip": ip or "",
+                    "ssh": "nie sprawdzono" if status == "running" and ip else "—",
+                }
+                record["bat"] = self.shortcut_path_for(record).is_file()
+                records.append(record)
+            self.set_progress(host_index, len(hosts), f"{host_index}/{len(hosts)}")
 
         self.log(f"Załadowano {len(records)} kontenerów. Zaznacz te, które chcesz obsłużyć.")
         self.log_queue.put(("containers", records))
 
+    def test_hosts(self, hosts):
+        proxmox_user = self.validated_user("proxmox_user")
+        timeout = self.validated_timeout()
+        script = "command -v pct >/dev/null || exit 10\npveversion 2>/dev/null || echo 'Proxmox version unavailable'\n"
+        failures = 0
+        for index, host in enumerate(hosts, start=1):
+            self.set_progress(index - 1, len(hosts), f"{index - 1}/{len(hosts)}")
+            self.log(f"[{host}] Test SSH i pct…")
+            result = run_ssh_script(host, script, proxmox_user, timeout)
+            output = result.stdout.decode("utf-8", errors="replace").strip()
+            if result.returncode == 0:
+                self.log(f"[{host}] OK — {output or 'SSH i pct dostępne'}")
+            else:
+                failures += 1
+                self.log(f"[{host}] BŁĄD ({result.returncode}) — {output or 'brak odpowiedzi'}")
+            self.set_progress(index, len(hosts), f"{index}/{len(hosts)}")
+        if failures:
+            raise RuntimeError(f"Test nie powiódł się dla {failures} z {len(hosts)} hostów.")
+        self.log("Wszystkie zaznaczone hosty przeszły test.")
+
+    def check_container_ssh(self, _hosts, containers):
+        lxc_user = self.validated_user("lxc_user")
+        timeout = self.validated_timeout()
+        candidates = [record for record in containers if record["status"] == "running" and record["ip"]]
+        skipped = len(containers) - len(candidates)
+        for record in containers:
+            if record not in candidates:
+                record["ssh"] = "—"
+        if not candidates:
+            self.log_queue.put(("refresh_containers", None))
+            raise RuntimeError("Żaden zaznaczony kontener nie jest uruchomiony i nie ma pasującego adresu IP.")
+
+        self.log(f"Sprawdzanie SSH w {len(candidates)} kontenerach…")
+        completed = 0
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as executor:
+            futures = {
+                executor.submit(check_ssh_access, record["ip"], lxc_user, timeout): record
+                for record in candidates
+            }
+            for future in as_completed(futures):
+                record = futures[future]
+                try:
+                    ssh_status, output = future.result()
+                except Exception as error:
+                    ssh_status, output = "błąd testu", str(error)
+                record["ssh"] = ssh_status
+                completed += 1
+                self.set_progress(completed, len(candidates), f"{completed}/{len(candidates)}")
+                self.log(f"[{record['host']}] LXC {record['ct']} ({record['name']}): SSH {ssh_status}")
+                if output.strip() and ssh_status not in {"działa", "brak autoryzacji"}:
+                    self.log(f"  {output.strip()}")
+        self.log_queue.put(("refresh_containers", None))
+        if skipped:
+            self.log(f"Pominięto {skipped} zatrzymanych kontenerów lub rekordów bez adresu IP.")
+
+    def shortcut_path_for(self, record):
+        filename = (
+            f"Proxmox-{safe_filename_part(record['host'])}-LXC-{record['ct']}-"
+            f"{safe_filename_part(record['name'])}.bat"
+        )
+        return self.configured_output_directory() / filename
+
     def show_container_records(self, records):
+        self.loaded_containers = records
+        self.apply_container_filter()
+
+    def _render_container_records(self, records):
         self.container_tree.delete(*self.container_tree.get_children())
         self.container_records.clear()
         for record in records:
             item = self.container_tree.insert(
                 "", tk.END,
-                values=(record["host"], record["ct"], record["name"], record["status"], record["ip"] or "—"),
+                values=(
+                    record["host"], record["ct"], record["name"], record["status"],
+                    record["ip"] or "—", record.get("ssh", "nie sprawdzono"),
+                    "tak" if record.get("bat") else "nie",
+                ),
             )
             self.container_records[item] = record
-        self.container_count.set(f"Załadowane kontenery: {len(records)}")
+        self.container_count.set(f"Widoczne: {len(records)} / załadowane: {len(self.loaded_containers)}")
         children = self.container_tree.get_children()
         if children:
             self.container_tree.see(children[0])
+
+    def set_progress(self, current, total, label=""):
+        self.log_queue.put(("progress", (current, total, label)))
 
     def upload_keys(self, hosts):
         key = Path(os.path.expandvars(os.path.expanduser(self.key_path.get().strip())))
@@ -547,7 +714,8 @@ class ProxmoxManager(tk.Tk):
         for container in containers:
             grouped.setdefault(container["host"], []).append(container)
 
-        for host, host_containers in grouped.items():
+        for host_index, (host, host_containers) in enumerate(grouped.items(), start=1):
+            self.set_progress(host_index - 1, len(grouped), f"{host_index - 1}/{len(grouped)}")
             ct_ids = " ".join(container["ct"] for container in host_containers)
             configure_script = (
                 CONFIGURE_SCRIPT
@@ -562,6 +730,7 @@ class ProxmoxManager(tk.Tk):
                     self.log(f"[{host}] {line}")
             if result.returncode:
                 raise RuntimeError(f"Konfiguracja na {host} zakończyła się kodem {result.returncode}.")
+            self.set_progress(host_index, len(grouped), f"{host_index}/{len(grouped)}")
         self.log("Konfiguracja SSH zakończona.")
 
     def generate_shortcuts(self, _hosts, containers):
@@ -569,13 +738,15 @@ class ProxmoxManager(tk.Tk):
         lxc_user = self.validated_user("lxc_user")
         output_dir = self.configured_output_directory()
         output_dir.mkdir(parents=True, exist_ok=True)
-        for container in containers:
+        for index, container in enumerate(containers, start=1):
+            self.set_progress(index - 1, len(containers), f"{index - 1}/{len(containers)}")
             host = container["host"]
             ct_id = container["ct"]
             name = container["name"]
             ip = container["ip"]
             if container["status"] != "running" or not ip:
                 self.log(f"[{host}] Pominięto LXC {ct_id} ({name}): kontener nie działa lub nie ma pasującego IP.")
+                self.set_progress(index, len(containers), f"{index}/{len(containers)}")
                 continue
             filename = (
                 f"Proxmox-{safe_filename_part(host)}-LXC-{ct_id}-"
@@ -588,8 +759,11 @@ class ProxmoxManager(tk.Tk):
                 f'"$Host.UI.RawUI.WindowTitle = \'{title}\'; ssh {lxc_user}@{ip}"\r\n'
             )
             (output_dir / filename).write_text(content, encoding="ascii", errors="replace", newline="")
+            container["bat"] = True
             created += 1
             self.log(f"Utworzono: {filename} -> {ip}")
+            self.set_progress(index, len(containers), f"{index}/{len(containers)}")
+        self.log_queue.put(("refresh_containers", None))
         self.log(f"Gotowe: utworzono {created} skrótów w {output_dir}")
 
     def run_all(self, hosts, containers):
@@ -597,6 +771,7 @@ class ProxmoxManager(tk.Tk):
         self.generate_ssh_key()
         self.upload_keys(target_hosts)
         self.configure_lxc(target_hosts, containers)
+        self.check_container_ssh(target_hosts, containers)
         self.generate_shortcuts(target_hosts, containers)
 
     def validated_remote_key_name(self):
