@@ -1,6 +1,6 @@
 # Per-user configuration and generated artifacts
 app/ProxmoxLxcSshManager.config.json
-shortcuts/*.bat
+shortcuts/*
 
 # Python
 __pycache__/

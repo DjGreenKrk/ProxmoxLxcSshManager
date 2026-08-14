@@ -40,6 +40,9 @@ for ct in $(pct list 2>/dev/null | awk 'NR > 1 {print $1}'); do
     ip=""
     if [ "$status" = "running" ]; then
         addresses=$(pct exec "$ct" -- hostname -I 2>/dev/null || true)
+        if [ -z "$addresses" ]; then
+            addresses=$(pct exec "$ct" -- ip -o -4 addr show 2>/dev/null | awk '$3 == "inet" {sub(/\/.*/, "", $4); print $4}' || true)
+        fi
         for address in $addresses; do
             case "$address" in
                 __LXC_IP_PATTERNS__) ip="$address"; break ;;
