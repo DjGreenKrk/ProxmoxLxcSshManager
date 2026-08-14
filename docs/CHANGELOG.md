@@ -17,7 +17,8 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
 ### Naprawiono
 
-- pojedynczy kontener LXC nie może już bezterminowo blokować ładowania, diagnostyki ani konfiguracji; `pct exec` i lokalne procesy SSH mają twarde limity czasu.
+- pojedynczy kontener LXC nie może już bezterminowo blokować ładowania, diagnostyki ani konfiguracji; `pct exec` i lokalne procesy SSH mają twarde limity czasu;
+- diagnostyka automatycznie ponawia sekwencyjnie pierwszy test SSH zakończony timeoutem, ograniczając fałszywe alarmy podczas równoległego sprawdzania wielu LXC.
 
 ## 0.4.0 — 2026-08-14
 

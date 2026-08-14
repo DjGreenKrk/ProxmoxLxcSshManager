@@ -827,6 +827,14 @@ class ProxmoxManager(tk.Tk):
                     ssh_status, output = future.result()
                 except Exception as error:
                     ssh_status, output = "błąd testu", str(error)
+                if ssh_status == "timeout":
+                    self.log(
+                        f"[{record['host']}] LXC {record['ct']} ({record['name']}): "
+                        "pierwszy test przekroczył limit — ponawiam sekwencyjnie."
+                    )
+                    ssh_status, output = check_ssh_access(
+                        record["ip"], lxc_user, timeout, accept_new
+                    )
                 record["ssh"] = ssh_status
                 completed += 1
                 self.set_progress(completed, len(candidates), f"{completed}/{len(candidates)}")

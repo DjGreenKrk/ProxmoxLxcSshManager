@@ -144,6 +144,36 @@ class DryRunTests(unittest.TestCase):
         self.assertTrue(any("PODGLĄD" in message for message in messages))
 
 
+class ContainerDiagnosticsTests(unittest.TestCase):
+    def test_timed_out_parallel_check_is_retried_once(self):
+        messages = []
+        record = {
+            "host": "pve.example.test",
+            "ct": "155",
+            "name": "gameyfin",
+            "status": "running",
+            "ip": "192.0.2.155",
+        }
+        fake = SimpleNamespace(
+            validated_user=lambda _name: "root",
+            validated_timeout=lambda: 8,
+            log_queue=SimpleNamespace(put=lambda _item: None),
+            log=messages.append,
+            set_progress=lambda *_args: None,
+        )
+
+        with patch.object(
+            manager,
+            "check_ssh_access",
+            side_effect=[("timeout", "first timeout"), ("działa", "")],
+        ) as check:
+            manager.ProxmoxManager._check_container_ssh(fake, [record])
+
+        self.assertEqual(check.call_count, 2)
+        self.assertEqual(record["ssh"], "działa")
+        self.assertTrue(any("ponawiam sekwencyjnie" in message for message in messages))
+
+
 class FormattingTests(unittest.TestCase):
     def test_host_label_includes_discovered_name(self):
         profile = {"address": "192.168.1.100", "user": "root", "port": 22, "name": "pve-one"}
