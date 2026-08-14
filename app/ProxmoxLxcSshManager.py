@@ -41,6 +41,7 @@ DEFAULT_SETTINGS = {
     "connect_timeout_seconds": 8,
     "output_directory": "shortcuts" if FROZEN else "../shortcuts",
     "dry_run": False,
+    "dark_mode": False,
 }
 
 DISCOVER_SCRIPT = r'''set -u
@@ -332,6 +333,7 @@ class ProxmoxManager(tk.Tk):
         self.connect_timeout = tk.StringVar(value=str(self.settings["connect_timeout_seconds"]))
         self.output_directory = tk.StringVar(value=str(self.settings["output_directory"]))
         self.dry_run = tk.BooleanVar(value=bool(self.settings.get("dry_run", False)))
+        self.dark_mode = tk.BooleanVar(value=bool(self.settings.get("dark_mode", False)))
         self.status = tk.StringVar(value="Gotowy")
         self.container_count = tk.StringVar(value="Załadowane kontenery: 0")
         self.host_selection_count = tk.StringVar(value="Zaznaczone hosty: 0")
@@ -340,6 +342,7 @@ class ProxmoxManager(tk.Tk):
         self.container_search = tk.StringVar()
         self.progress_text = tk.StringVar()
         self._build_ui()
+        self.apply_theme()
         self._refresh_hosts()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self._drain_log_queue)
@@ -374,7 +377,13 @@ class ProxmoxManager(tk.Tk):
             text="Zarządzanie dostępem SSH i skrótami do kontenerów LXC",
             style="Subtitle.TLabel",
         ).grid(row=1, column=1, sticky="nw")
-        ttk.Label(header, text=f"v{APP_VERSION}").grid(row=0, column=2, rowspan=2, padx=(12, 0))
+        ttk.Checkbutton(
+            header,
+            text="Tryb ciemny",
+            variable=self.dark_mode,
+            command=self.toggle_theme,
+        ).grid(row=0, column=2, rowspan=2, padx=(12, 8))
+        ttk.Label(header, text=f"v{APP_VERSION}").grid(row=0, column=3, rowspan=2, padx=(8, 0))
 
         self.notebook = ttk.Notebook(main)
         self.notebook.grid(row=1, column=0, sticky="nsew")
@@ -429,7 +438,7 @@ class ProxmoxManager(tk.Tk):
         ttk.Label(
             settings_frame,
             text="Opcjonalne. Puste pole używa puli /24 hosta; kilka wartości oddziel przecinkami, średnikami lub spacjami.",
-            foreground="#555555",
+            style="Subtitle.TLabel",
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
         ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
@@ -598,6 +607,65 @@ class ProxmoxManager(tk.Tk):
         selected_containers = len(self.container_tree.selection()) if hasattr(self, "container_tree") else 0
         self.container_selection_count.set(f"Zaznaczone LXC: {selected_containers}")
 
+    def toggle_theme(self):
+        self.apply_theme()
+        self.settings["dark_mode"] = self.dark_mode.get()
+        save_settings(self.settings)
+
+    def apply_theme(self):
+        dark = self.dark_mode.get()
+        palette = {
+            "background": "#171a1f" if dark else "#f0f0f0",
+            "panel": "#20242b" if dark else "#f7f7f7",
+            "field": "#2b3038" if dark else "#ffffff",
+            "foreground": "#f2f3f5" if dark else "#111111",
+            "muted": "#aeb6c2" if dark else "#555555",
+            "border": "#3a414c" if dark else "#c8c8c8",
+            "accent": "#00d85a" if dark else "#0078d7",
+            "selection": "#166b3a" if dark else "#0078d7",
+        }
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        self.configure(background=palette["background"])
+        style.configure(".", background=palette["background"], foreground=palette["foreground"])
+        style.configure("TFrame", background=palette["background"])
+        style.configure("TLabel", background=palette["background"], foreground=palette["foreground"])
+        style.configure("Title.TLabel", background=palette["background"], foreground=palette["foreground"], font=("Segoe UI", 18, "bold"))
+        style.configure("Subtitle.TLabel", background=palette["background"], foreground=palette["muted"])
+        style.configure("TLabelframe", background=palette["background"], bordercolor=palette["border"])
+        style.configure("TLabelframe.Label", background=palette["background"], foreground=palette["foreground"])
+        style.configure("Section.TLabelframe.Label", background=palette["background"], foreground=palette["foreground"], font=("Segoe UI", 10, "bold"))
+        style.configure("TButton", background=palette["panel"], foreground=palette["foreground"], bordercolor=palette["border"])
+        style.map("TButton", background=[("active", palette["field"]), ("pressed", palette["selection"])])
+        style.configure("TCheckbutton", background=palette["background"], foreground=palette["foreground"])
+        style.map("TCheckbutton", background=[("active", palette["background"])])
+        style.configure("TEntry", fieldbackground=palette["field"], foreground=palette["foreground"], insertcolor=palette["foreground"], bordercolor=palette["border"])
+        style.configure("TCombobox", fieldbackground=palette["field"], foreground=palette["foreground"], arrowcolor=palette["foreground"], bordercolor=palette["border"])
+        style.map("TCombobox", fieldbackground=[("readonly", palette["field"])], foreground=[("readonly", palette["foreground"])])
+        style.configure("TNotebook", background=palette["background"], bordercolor=palette["border"])
+        style.configure("TNotebook.Tab", background=palette["panel"], foreground=palette["foreground"], padding=(10, 5))
+        style.map("TNotebook.Tab", background=[("selected", palette["field"]), ("active", palette["field"])])
+        style.configure("Containers.Treeview", background=palette["field"], fieldbackground=palette["field"], foreground=palette["foreground"], rowheight=26, bordercolor=palette["border"])
+        style.map("Containers.Treeview", foreground=[("selected", "#ffffff")], background=[("selected", palette["selection"])])
+        style.configure("Containers.Treeview.Heading", background=palette["panel"], foreground=palette["foreground"], bordercolor=palette["border"])
+        style.map("Containers.Treeview.Heading", background=[("active", palette["field"])])
+        style.configure("Horizontal.TProgressbar", background=palette["accent"], troughcolor=palette["panel"], bordercolor=palette["border"])
+        self.option_add("*TCombobox*Listbox.background", palette["field"])
+        self.option_add("*TCombobox*Listbox.foreground", palette["foreground"])
+        self.option_add("*TCombobox*Listbox.selectBackground", palette["selection"])
+        if hasattr(self, "host_list"):
+            self.host_list.configure(
+                background=palette["field"], foreground=palette["foreground"],
+                selectbackground=palette["selection"], selectforeground="#ffffff",
+                highlightbackground=palette["border"], highlightcolor=palette["accent"],
+            )
+        if hasattr(self, "log_box"):
+            self.log_box.configure(
+                background=palette["field"], foreground=palette["foreground"],
+                insertbackground=palette["foreground"], selectbackground=palette["selection"],
+                selectforeground="#ffffff", highlightbackground=palette["border"],
+            )
+
     def clear_log(self):
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", tk.END)
@@ -635,6 +703,7 @@ class ProxmoxManager(tk.Tk):
         self.settings["connect_timeout_seconds"] = self.connect_timeout.get().strip()
         self.settings["output_directory"] = self.output_directory.get().strip()
         self.settings["dry_run"] = self.dry_run.get()
+        self.settings["dark_mode"] = self.dark_mode.get()
         save_settings(self.settings)
 
     def on_close(self):

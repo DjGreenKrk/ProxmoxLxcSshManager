@@ -51,6 +51,7 @@ class SettingsMigrationTests(unittest.TestCase):
 
     def test_current_host_name_is_preserved(self):
         current = {
+            "dark_mode": True,
             "hosts": [
                 {
                     "address": "192.168.1.100",
@@ -67,6 +68,7 @@ class SettingsMigrationTests(unittest.TestCase):
                 settings = manager.load_settings()
 
         self.assertEqual(settings["hosts"], current["hosts"])
+        self.assertTrue(settings["dark_mode"])
 
 
 class SshCommandTests(unittest.TestCase):

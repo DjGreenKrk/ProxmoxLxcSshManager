@@ -9,6 +9,7 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 - logo oraz ikonę aplikacji dla okna i pliku wykonywalnego Windows;
 - powtarzalny build pojedynczego pliku EXE przy użyciu PyInstaller;
 - skrypt tworzący przenośny pakiet ZIP z EXE, README i licencją.
+- przełącznik kompletnego trybu ciemnego obejmującego formularze, zakładki, tabelę LXC, listę hostów i dziennik; wybór jest zapamiętywany w configu.
 
 ### Zmieniono
 
