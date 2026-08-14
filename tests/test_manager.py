@@ -74,12 +74,32 @@ class SshCommandTests(unittest.TestCase):
         self.assertEqual(command[command.index("-p") + 1], "2222")
         self.assertIn("ConnectTimeout=9", command)
         self.assertEqual(run.call_args.kwargs["input"], b"true\n")
+        self.assertEqual(run.call_args.kwargs["timeout"], 360)
+
+    def test_run_ssh_script_reports_command_timeout(self):
+        with patch.object(
+            manager.subprocess,
+            "run",
+            side_effect=manager.subprocess.TimeoutExpired(["ssh.exe"], 12),
+        ):
+            with self.assertRaisesRegex(TimeoutError, "przekroczyło limit 12 s"):
+                manager.run_ssh_script("pve.example.test", "true\n", command_timeout=12)
 
     def test_unknown_host_key_is_classified_as_trust_required(self):
         completed = SimpleNamespace(returncode=255, stdout=b"Host key verification failed")
         with patch.object(manager.subprocess, "run", return_value=completed):
             status, _ = manager.check_ssh_access("192.0.2.10")
         self.assertEqual(status, "wymaga zaufania")
+
+    def test_ssh_access_timeout_is_classified(self):
+        with patch.object(
+            manager.subprocess,
+            "run",
+            side_effect=manager.subprocess.TimeoutExpired(["ssh.exe"], 13),
+        ):
+            status, output = manager.check_ssh_access("192.0.2.10", timeout=8)
+        self.assertEqual(status, "timeout")
+        self.assertIn("13 s", output)
 
     def test_accept_new_policy_is_only_used_when_requested(self):
         completed = SimpleNamespace(returncode=0, stdout=b"")
@@ -101,6 +121,7 @@ class SshCommandTests(unittest.TestCase):
             self.assertIn(command, manager.CONFIGURE_SCRIPT)
         for service_manager in ("systemctl", "rc-service"):
             self.assertIn(service_manager, manager.CONFIGURE_SCRIPT)
+        self.assertIn("timeout __PCT_CONFIGURATION_TIMEOUT__ pct exec", manager.CONFIGURE_SCRIPT)
 
 
 class DryRunTests(unittest.TestCase):

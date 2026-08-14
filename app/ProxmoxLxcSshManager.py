@@ -22,6 +22,8 @@ DEFAULT_HOSTS = [
 ]
 DEFAULT_PUBLIC_KEY = Path.home() / ".ssh" / "id_ed25519.pub"
 DEFAULT_REMOTE_KEY_NAME = "proxmox_lxc_access.pub"
+PCT_DISCOVERY_TIMEOUT_SECONDS = 15
+PCT_CONFIGURATION_TIMEOUT_SECONDS = 300
 DEFAULT_SETTINGS = {
     "hosts": DEFAULT_HOSTS,
     "public_key": str(DEFAULT_PUBLIC_KEY),
@@ -42,9 +44,9 @@ for ct in $(pct list 2>/dev/null | awk 'NR > 1 {print $1}'); do
     [ -z "$name" ] && name="lxc-$ct"
     ip=""
     if [ "$status" = "running" ]; then
-        addresses=$(pct exec "$ct" -- hostname -I 2>/dev/null || true)
+        addresses=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- hostname -I 2>/dev/null || true)
         if [ -z "$addresses" ]; then
-            addresses=$(pct exec "$ct" -- ip -o -4 addr show 2>/dev/null | awk '$3 == "inet" {sub(/\/.*/, "", $4); print $4}' || true)
+            addresses=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- ip -o -4 addr show 2>/dev/null | awk '$3 == "inet" {sub(/\/.*/, "", $4); print $4}' || true)
         fi
         for address in $addresses; do
             case "$address" in
@@ -82,7 +84,7 @@ for ct in __SELECTED_CT_IDS__; do
         continue
     fi
 
-    if pct exec "$ct" -- bash -s <<'LXC_SCRIPT'
+    if timeout __PCT_CONFIGURATION_TIMEOUT__ pct exec "$ct" -- bash -s <<'LXC_SCRIPT'
 set -eu
 key_file=/tmp/proxmox_lxc_access_key.pub
 trap 'rm -f "$key_file"' EXIT
@@ -177,18 +179,24 @@ def save_settings(settings):
     )
 
 
-def run_ssh_script(host, script, user="root", port=22, timeout=8):
+def run_ssh_script(host, script, user="root", port=22, timeout=8, command_timeout=360):
     command = [
         "ssh.exe", "-T", "-p", str(port), "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
         f"{user}@{host}", "bash -s",
     ]
-    return subprocess.run(
-        command,
-        input=script.encode("utf-8"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            command,
+            input=script.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=command_timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError(
+            f"Polecenie SSH na {user}@{host}:{port} przekroczyło limit {command_timeout} s."
+        ) from error
 
 
 def check_ssh_access(host, user="root", timeout=8, accept_new=False):
@@ -198,12 +206,16 @@ def check_ssh_access(host, user="root", timeout=8, accept_new=False):
         "-o", "ConnectionAttempts=1", "-o", f"StrictHostKeyChecking={host_key_policy}",
         f"{user}@{host}", "exit",
     ]
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout + 5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "timeout", f"Test SSH przekroczył limit {timeout + 5} s."
     output = result.stdout.decode("utf-8", errors="replace")
     if result.returncode == 0:
         return "działa", output
@@ -541,7 +553,7 @@ class ProxmoxManager(tk.Tk):
                 continue
             if selected_filter == "Brak autoryzacji" and record.get("ssh") != "brak autoryzacji":
                 continue
-            if selected_filter == "SSH niedostępne" and record.get("ssh") not in {"niedostępny", "błąd testu"}:
+            if selected_filter == "SSH niedostępne" and record.get("ssh") not in {"niedostępny", "timeout", "błąd testu"}:
                 continue
             if selected_filter == "Nie sprawdzono" and record.get("ssh") != "nie sprawdzono":
                 continue
@@ -701,14 +713,21 @@ class ProxmoxManager(tk.Tk):
         timeout = self.validated_timeout()
         ip_prefixes = self.validated_ip_prefixes()
         ip_patterns = "|".join(f"{prefix}*" for prefix in ip_prefixes)
-        discover_script = DISCOVER_SCRIPT.replace("__LXC_IP_PATTERNS__", ip_patterns)
+        discover_script = (
+            DISCOVER_SCRIPT
+            .replace("__LXC_IP_PATTERNS__", ip_patterns)
+            .replace("__PCT_DISCOVERY_TIMEOUT__", str(PCT_DISCOVERY_TIMEOUT_SECONDS))
+        )
         records = []
 
         for host_index, host_profile in enumerate(hosts, start=1):
             host = self.host_address(host_profile)
             self.set_progress(host_index - 1, len(hosts), f"{host_index - 1}/{len(hosts)}")
             self.log(f"[{host}] Ładowanie listy kontenerów…")
-            result = run_ssh_script(host, discover_script, host_profile["user"], host_profile["port"], timeout)
+            result = run_ssh_script(
+                host, discover_script, host_profile["user"], host_profile["port"], timeout,
+                command_timeout=900,
+            )
             output = result.stdout.decode("utf-8", errors="replace")
             if result.returncode:
                 if output.strip():
@@ -986,6 +1005,7 @@ class ProxmoxManager(tk.Tk):
                 CONFIGURE_SCRIPT
                 .replace("__REMOTE_KEY_PATH__", remote_key_path)
                 .replace("__SELECTED_CT_IDS__", ct_ids)
+                .replace("__PCT_CONFIGURATION_TIMEOUT__", str(PCT_CONFIGURATION_TIMEOUT_SECONDS))
             )
             self.log(f"[{host}] Konfiguracja SSH w LXC: {ct_ids}")
             if self.dry_run.get():
@@ -995,7 +1015,10 @@ class ProxmoxManager(tk.Tk):
                 )
                 self.set_progress(host_index, len(grouped), f"{host_index}/{len(grouped)}")
                 continue
-            result = run_ssh_script(host, configure_script, host_profile["user"], host_profile["port"], timeout)
+            result = run_ssh_script(
+                host, configure_script, host_profile["user"], host_profile["port"], timeout,
+                command_timeout=PCT_CONFIGURATION_TIMEOUT_SECONDS * len(host_containers) + 30,
+            )
             output = result.stdout.decode("utf-8", errors="replace").strip()
             if output:
                 for line in output.splitlines():

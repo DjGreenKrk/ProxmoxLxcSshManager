@@ -15,6 +15,10 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
 - lokalne ustawienia `.vscode` są ignorowane przez Git.
 
+### Naprawiono
+
+- pojedynczy kontener LXC nie może już bezterminowo blokować ładowania, diagnostyki ani konfiguracji; `pct exec` i lokalne procesy SSH mają twarde limity czasu.
+
 ## 0.4.0 — 2026-08-14
 
 ### Dodano
