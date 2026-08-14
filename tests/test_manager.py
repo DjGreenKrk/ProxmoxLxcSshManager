@@ -18,6 +18,12 @@ class VersionTests(unittest.TestCase):
     def test_source_version_matches_version_file(self):
         self.assertEqual(manager.APP_VERSION, (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip())
 
+    def test_windows_packaging_assets_exist(self):
+        self.assertTrue((PROJECT_ROOT / "app" / "assets" / "ProxmoxLxcSshManager_logo.png").is_file())
+        self.assertTrue((PROJECT_ROOT / "app" / "assets" / "ProxmoxLxcSshManager_logo.ico").is_file())
+        self.assertTrue((PROJECT_ROOT / "packaging" / "ProxmoxLxcSshManager.spec").is_file())
+        self.assertTrue((PROJECT_ROOT / "scripts" / "build_windows.ps1").is_file())
+
 
 class SettingsMigrationTests(unittest.TestCase):
     def test_legacy_hosts_and_prefix_are_migrated(self):

@@ -2,6 +2,18 @@
 
 Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
+## 0.6.0 — w przygotowaniu
+
+### Dodano
+
+- logo oraz ikonę aplikacji dla okna i pliku wykonywalnego Windows;
+- powtarzalny build pojedynczego pliku EXE przy użyciu PyInstaller;
+- skrypt tworzący przenośny pakiet ZIP z EXE, README i licencją.
+
+### Zmieniono
+
+- wersja EXE zapisuje prywatny config oraz generowane skróty obok programu zamiast w tymczasowym katalogu PyInstaller.
+
 ## 0.5.0 — 2026-08-14
 
 ### Dodano

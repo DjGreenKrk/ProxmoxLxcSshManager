@@ -1,6 +1,6 @@
 # Proxmox LXC SSH Manager
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/releases)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -8,7 +8,7 @@
 
 Graficzne narzędzie dla Windows do zarządzania dostępem SSH do kontenerów LXC na hostach Proxmox.
 
-Aktualna wersja rozwojowa: **0.5.0**
+Aktualna wersja rozwojowa: **0.6.0**
 
 ## Funkcje
 
@@ -46,6 +46,10 @@ Z katalogu projektu:
 ```powershell
 python .\app\ProxmoxLxcSshManager.py
 ```
+
+Można również użyć przenośnego `ProxmoxLxcSshManager.exe`, który nie wymaga
+instalowania Pythona. Przy pierwszym uruchomieniu EXE config i katalog `shortcuts`
+zostaną utworzone obok programu.
 
 Przy pierwszym uruchomieniu aplikacja tworzy prywatny plik
 `app/ProxmoxLxcSshManager.config.json` na podstawie ustawień domyślnych.
@@ -88,3 +92,14 @@ python -m unittest discover -s tests -v
 ```
 
 Ten sam zestaw jest uruchamiany przez GitHub Actions na Pythonie 3.10 i 3.12.
+
+## Budowanie pakietu Windows
+
+Wymagany jest PyInstaller. Z katalogu projektu uruchom:
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+Skrypt uruchamia testy, buduje pojedynczy plik EXE z ikoną aplikacji i tworzy
+archiwum ZIP w katalogu `dist`.

@@ -4,6 +4,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,10 +13,13 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 APP_TITLE = f"Proxmox LXC SSH Manager v{APP_VERSION}"
-OUTPUT_DIR = Path(__file__).resolve().parent
+FROZEN = bool(getattr(sys, "frozen", False))
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+OUTPUT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 CONFIG_FILE = OUTPUT_DIR / "ProxmoxLxcSshManager.config.json"
+APP_ICON = RESOURCE_DIR / "assets" / "ProxmoxLxcSshManager_logo.ico"
 DEFAULT_HOSTS = [
     {"address": "192.168.1.100", "user": "root", "port": 22},
     {"address": "192.168.1.101", "user": "root", "port": 22},
@@ -32,7 +36,7 @@ DEFAULT_SETTINGS = {
     "lxc_ip_prefixes": ["192.168.1."],
     "remote_key_directory": "/root",
     "connect_timeout_seconds": 8,
-    "output_directory": "../shortcuts",
+    "output_directory": "shortcuts" if FROZEN else "../shortcuts",
     "dry_run": False,
 }
 
@@ -280,6 +284,11 @@ class ProxmoxManager(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
+        if APP_ICON.is_file():
+            try:
+                self.iconbitmap(default=str(APP_ICON))
+            except tk.TclError:
+                pass
         self.geometry("980x850")
         self.minsize(820, 700)
         self.log_queue = queue.Queue()
