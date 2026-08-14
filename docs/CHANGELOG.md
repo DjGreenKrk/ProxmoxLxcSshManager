@@ -17,7 +17,8 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 ### Zmieniono
 
 - SSH, SCP, diagnostyka i odczyt LXC używają ustawień właściwego hosta;
-- stary config z listą adresów i globalnym użytkownikiem jest automatycznie migrowany.
+- stary config z listą adresów i globalnym użytkownikiem jest automatycznie migrowany;
+- kolumna hosta na liście LXC pokazuje wykrytą nazwę zamiast technicznego adresu, jeśli nazwa jest dostępna.
 
 ## 0.3.0 — 2026-08-14
 

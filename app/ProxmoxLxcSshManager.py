@@ -511,7 +511,10 @@ class ProxmoxManager(tk.Tk):
         selected_filter = self.container_filter.get()
         visible = []
         for record in self.loaded_containers:
-            searchable = " ".join(str(record.get(key, "")) for key in ("host", "ct", "name", "status", "ip", "ssh")).lower()
+            searchable = " ".join(
+                str(record.get(key, ""))
+                for key in ("host", "host_display", "ct", "name", "status", "ip", "ssh")
+            ).lower()
             if phrase and phrase not in searchable:
                 continue
             if selected_filter == "Uruchomione" and record["status"] != "running":
@@ -705,6 +708,7 @@ class ProxmoxManager(tk.Tk):
                 ct_id, name, status, ip = match.groups()
                 record = {
                     "host": host,
+                    "host_display": host_profile.get("name", host),
                     "ct": ct_id,
                     "name": name,
                     "status": status,
@@ -857,7 +861,7 @@ class ProxmoxManager(tk.Tk):
             item = self.container_tree.insert(
                 "", tk.END,
                 values=(
-                    record["host"], record["ct"], record["name"], record["status"],
+                    record.get("host_display", record["host"]), record["ct"], record["name"], record["status"],
                     record["ip"] or "—", record.get("ssh", "nie sprawdzono"),
                     "tak" if record.get("bat") else "nie",
                 ),
