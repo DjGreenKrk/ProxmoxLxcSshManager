@@ -18,7 +18,7 @@ Aktualna wersja: **0.2.0**
 - diagnostykę połączenia z hostami Proxmox i dostępności `pct`;
 - równoległe sprawdzanie dostępu SSH do wybranych LXC;
 - jawne dodawanie nowych fingerprintów LXC do lokalnego `known_hosts`;
-- filtrowanie kontenerów według nazwy, statusu SSH i obecności skrótu BAT;
+- filtrowanie kontenerów według nazwy, stanu SSH, zaufania fingerprintu, autoryzacji i obecności skrótu BAT;
 - pasek postępu dla dłuższych operacji;
 - instalowanie oraz uruchamianie serwera SSH w wybranych LXC;
 - dodawanie klucza do `authorized_keys` bez duplikatów;

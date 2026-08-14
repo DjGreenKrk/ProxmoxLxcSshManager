@@ -171,7 +171,7 @@ def check_ssh_access(host, user="root", timeout=8, accept_new=False):
         return "działa", output
     lowered = output.lower()
     if "host key verification failed" in lowered or "no host key is known" in lowered:
-        return "nieznany host", output
+        return "wymaga zaufania", output
     if "permission denied" in lowered:
         return "brak autoryzacji", output
     return "niedostępny", output
@@ -276,7 +276,10 @@ class ProxmoxManager(tk.Tk):
         filter_box = ttk.Combobox(
             filter_frame,
             textvariable=self.container_filter,
-            values=("Wszystkie", "Uruchomione", "SSH działa", "Bez SSH", "Bez BAT"),
+            values=(
+                "Wszystkie", "Uruchomione", "SSH działa", "Wymaga zaufania",
+                "Brak autoryzacji", "SSH niedostępne", "Nie sprawdzono", "Bez BAT",
+            ),
             state="readonly",
             width=15,
         )
@@ -418,7 +421,13 @@ class ProxmoxManager(tk.Tk):
                 continue
             if selected_filter == "SSH działa" and record.get("ssh") != "działa":
                 continue
-            if selected_filter == "Bez SSH" and record.get("ssh") in {"działa", "—"}:
+            if selected_filter == "Wymaga zaufania" and record.get("ssh") != "wymaga zaufania":
+                continue
+            if selected_filter == "Brak autoryzacji" and record.get("ssh") != "brak autoryzacji":
+                continue
+            if selected_filter == "SSH niedostępne" and record.get("ssh") not in {"niedostępny", "błąd testu"}:
+                continue
+            if selected_filter == "Nie sprawdzono" and record.get("ssh") != "nie sprawdzono":
                 continue
             if selected_filter == "Bez BAT" and record.get("bat"):
                 continue

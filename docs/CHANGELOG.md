@@ -10,7 +10,7 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 - kolumny `SSH` i `BAT` na liście kontenerów;
 - równoległe sprawdzanie dostępu SSH do zaznaczonych LXC;
 - wyszukiwanie kontenerów po hoście, CTID, nazwie, statusie i adresie;
-- filtry kontenerów uruchomionych, z działającym SSH, bez SSH i bez BAT;
+- osobne filtry dla działającego SSH, nieznanego fingerprintu, braku autoryzacji, niedostępnej usługi, nietestowanych LXC i braku BAT;
 - pasek postępu dla operacji wykonywanych na wielu hostach lub kontenerach.
 - jawną akcję dodawania nowych fingerprintów SSH do lokalnego `known_hosts`.
 
