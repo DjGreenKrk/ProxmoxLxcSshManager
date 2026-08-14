@@ -14,7 +14,9 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
 - wersja EXE zapisuje prywatny config oraz generowane skróty obok programu zamiast w tymczasowym katalogu PyInstaller.
 - interfejs podzielono na zakładki hostów i kontenerów, dzięki czemu tabela LXC ma więcej przestrzeni;
-- dodano nagłówek z logo, większe domyślne okno, liczniki zaznaczeń oraz uporządkowany panel operacji;
+- dodano nagłówek z logo, większe domyślne i minimalne okno oraz liczniki zaznaczeń;
+- operacje rozdzielono kontekstowo: klucze SSH są dostępne przy hostach, a konfiguracja i skróty wyłącznie przy kontenerach;
+- nagłówki wszystkich sekcji są spójnie wyróżnione;
 - dziennik można teraz skopiować do schowka lub wyczyścić bez restartowania aplikacji.
 
 ## 0.5.0 — 2026-08-14

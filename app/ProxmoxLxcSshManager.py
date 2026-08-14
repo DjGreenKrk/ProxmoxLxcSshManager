@@ -291,7 +291,7 @@ class ProxmoxManager(tk.Tk):
             except tk.TclError:
                 pass
         self.geometry("1180x820")
-        self.minsize(940, 680)
+        self.minsize(940, 760)
         self.log_queue = queue.Queue()
         self.worker_running = False
         self.container_records = {}
@@ -331,7 +331,7 @@ class ProxmoxManager(tk.Tk):
         main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=1)
         main.rowconfigure(1, weight=3)
-        main.rowconfigure(3, weight=1)
+        main.rowconfigure(2, weight=1)
 
         header = ttk.Frame(main)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -420,6 +420,28 @@ class ProxmoxManager(tk.Tk):
         ttk.Entry(output_row, textvariable=self.output_directory).grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(output_row, text="Wybierz…", command=self.choose_output_directory).grid(row=0, column=1)
 
+        host_actions = ttk.LabelFrame(details, text="Operacje hosta", padding=10, style="Section.TLabelframe")
+        host_actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        host_actions.columnconfigure(0, weight=1)
+        host_actions.columnconfigure(1, weight=1)
+        generate_key_button = ttk.Button(
+            host_actions,
+            text="0. Wygeneruj klucz SSH",
+            command=lambda: self.start_task(self.generate_ssh_key, require_hosts=False),
+        )
+        upload_key_button = ttk.Button(
+            host_actions,
+            text="1. Wyślij klucz na hosty",
+            command=lambda: self.start_task(self.upload_keys),
+        )
+        generate_key_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        upload_key_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Checkbutton(
+            host_actions,
+            text="Tryb podglądu — nie wprowadzaj zmian",
+            variable=self.dry_run,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
         containers_frame = ttk.LabelFrame(self.containers_tab, text="Kontenery — zaznacz LXC do obsługi", padding=10, style="Section.TLabelframe")
         containers_frame.grid(row=0, column=0, sticky="nsew")
         containers_frame.columnconfigure(0, weight=1)
@@ -481,29 +503,50 @@ class ProxmoxManager(tk.Tk):
         ttk.Button(container_footer, text="Zaufaj nowym kluczom", command=lambda: self.start_task(self.trust_container_host_keys, require_containers=True)).grid(row=0, column=2, padx=4)
         ttk.Button(container_footer, text="Zaznacz widoczne LXC", command=self.select_all_containers).grid(row=0, column=3, sticky="e")
 
-        actions = ttk.LabelFrame(main, text="Operacje", padding=8)
-        actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        for column in range(6):
-            actions.columnconfigure(column, weight=1)
-
-        self.action_buttons = [
-            ttk.Button(actions, text="0. Wygeneruj klucz SSH", command=lambda: self.start_task(self.generate_ssh_key, require_hosts=False)),
-            ttk.Button(actions, text="1. Wyślij klucz na hosty", command=lambda: self.start_task(self.upload_keys)),
-            ttk.Button(actions, text="2. Skonfiguruj SSH w LXC", command=lambda: self.start_task(self.configure_lxc, require_containers=True)),
-            ttk.Button(actions, text="3. Generuj skróty BAT", command=lambda: self.start_task(self.generate_shortcuts, require_containers=True)),
-            ttk.Button(actions, text="4. Archiwizuj stare BAT", command=self.confirm_archive_stale_shortcuts),
-            ttk.Button(actions, text="▶ Wykonaj wszystko", command=lambda: self.start_task(self.run_all, require_containers=True)),
-        ]
-        for column, button in enumerate(self.action_buttons):
+        container_actions = ttk.LabelFrame(
+            self.containers_tab,
+            text="Operacje na zaznaczonych LXC",
+            padding=10,
+            style="Section.TLabelframe",
+        )
+        container_actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for column in range(4):
+            container_actions.columnconfigure(column, weight=1)
+        configure_button = ttk.Button(
+            container_actions,
+            text="2. Skonfiguruj SSH",
+            command=lambda: self.start_task(self.configure_lxc, require_containers=True),
+        )
+        shortcuts_button = ttk.Button(
+            container_actions,
+            text="3. Generuj skróty BAT",
+            command=lambda: self.start_task(self.generate_shortcuts, require_containers=True),
+        )
+        archive_button = ttk.Button(
+            container_actions,
+            text="4. Archiwizuj stare BAT",
+            command=self.confirm_archive_stale_shortcuts,
+        )
+        run_all_button = ttk.Button(
+            container_actions,
+            text="▶ Wykonaj wszystko",
+            command=lambda: self.start_task(self.run_all, require_containers=True),
+        )
+        for column, button in enumerate((configure_button, shortcuts_button, archive_button, run_all_button)):
             button.grid(row=0, column=column, sticky="ew", padx=3)
         ttk.Checkbutton(
-            actions,
+            container_actions,
             text="Tryb podglądu — nie wprowadzaj zmian",
             variable=self.dry_run,
-        ).grid(row=1, column=0, columnspan=6, sticky="w", padx=3, pady=(8, 0))
+        ).grid(row=1, column=0, columnspan=4, sticky="w", padx=3, pady=(8, 0))
+
+        self.action_buttons = [
+            generate_key_button, upload_key_button, configure_button,
+            shortcuts_button, archive_button, run_all_button,
+        ]
 
         log_frame = ttk.LabelFrame(main, text="Dziennik", padding=8, style="Section.TLabelframe")
-        log_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        log_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
         log_toolbar = ttk.Frame(log_frame)
@@ -518,7 +561,7 @@ class ProxmoxManager(tk.Tk):
         scrollbar.grid(row=1, column=1, sticky="ns")
 
         status_frame = ttk.Frame(main)
-        status_frame.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        status_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         status_frame.columnconfigure(0, weight=1)
         ttk.Label(status_frame, textvariable=self.status, anchor="w").grid(row=0, column=0, sticky="ew")
         self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", length=220)
