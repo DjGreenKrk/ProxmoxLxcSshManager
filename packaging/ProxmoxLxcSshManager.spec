@@ -9,7 +9,7 @@ a = Analysis(
     [str(app_dir / "ProxmoxLxcSshManager.py")],
     pathex=[str(project_root)],
     binaries=[],
-    datas=[(str(icon), "assets")],
+    datas=[(str(app_dir / "assets"), "assets")],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

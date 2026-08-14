@@ -20,6 +20,7 @@ class VersionTests(unittest.TestCase):
 
     def test_windows_packaging_assets_exist(self):
         self.assertTrue((PROJECT_ROOT / "app" / "assets" / "ProxmoxLxcSshManager_logo.png").is_file())
+        self.assertTrue((PROJECT_ROOT / "app" / "assets" / "ProxmoxLxcSshManager_logo_64.png").is_file())
         self.assertTrue((PROJECT_ROOT / "app" / "assets" / "ProxmoxLxcSshManager_logo.ico").is_file())
         self.assertTrue((PROJECT_ROOT / "packaging" / "ProxmoxLxcSshManager.spec").is_file())
         self.assertTrue((PROJECT_ROOT / "scripts" / "build_windows.ps1").is_file())

@@ -30,6 +30,7 @@ Aktualna wersja rozwojowa: **0.6.0**
 - zapisywanie ustawień użytkownika w lokalnym pliku JSON.
 - tryb podglądu pokazujący plan operacji bez wysyłania kluczy i modyfikowania LXC lub skrótów;
 - instalowanie OpenSSH przez `apt-get`, `apk` albo `dnf` oraz obsługę systemd i OpenRC.
+- zakładkowy interfejs z osobnymi widokami hostów i kontenerów, licznikami zaznaczeń oraz narzędziami dziennika.
 
 ## Wymagania
 
