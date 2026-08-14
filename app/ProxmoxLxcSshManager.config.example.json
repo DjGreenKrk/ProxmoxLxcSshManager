@@ -7,7 +7,10 @@
   "remote_key_name": "proxmox_lxc_access.pub",
   "proxmox_user": "root",
   "lxc_user": "root",
-  "lxc_ip_prefix": "192.168.1.",
+  "lxc_ip_prefixes": [
+    "192.168.1.",
+    "10.0.0."
+  ],
   "remote_key_directory": "/root",
   "connect_timeout_seconds": 8,
   "output_directory": "../shortcuts"

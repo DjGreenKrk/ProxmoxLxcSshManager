@@ -2,6 +2,25 @@
 
 Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
+## 0.3.0 — 2026-08-14
+
+### Dodano
+
+- obsługę wielu prefiksów IPv4 używanych do wyboru adresów LXC;
+- automatyczną migrację starego ustawienia `lxc_ip_prefix` do listy `lxc_ip_prefixes`;
+- wykrywanie nieaktualnych skrótów BAT dla załadowanych hostów;
+- podgląd listy nieaktualnych plików i potwierdzenie operacji w GUI;
+- odzyskiwalną archiwizację skrótów w datowanym katalogu `_archive`.
+
+### Naprawiono
+
+- wykrywanie IPv4 w kontenerach BusyBox/Alpine, które nie obsługują `hostname -I`; aplikacja używa dla nich `ip -o -4 addr`.
+
+### Bezpieczeństwo
+
+- archiwizacja jest blokowana, jeśli lista LXC nie została odświeżona dla wszystkich wybranych hostów;
+- stare skróty nie są trwale usuwane.
+
 ## 0.2.0 — 2026-08-14
 
 ### Dodano

@@ -2,15 +2,17 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 APP_TITLE = f"Proxmox LXC SSH Manager v{APP_VERSION}"
 OUTPUT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = OUTPUT_DIR / "ProxmoxLxcSshManager.config.json"
@@ -23,7 +25,7 @@ DEFAULT_SETTINGS = {
     "remote_key_name": DEFAULT_REMOTE_KEY_NAME,
     "proxmox_user": "root",
     "lxc_user": "root",
-    "lxc_ip_prefix": "192.168.1.",
+    "lxc_ip_prefixes": ["192.168.1."],
     "remote_key_directory": "/root",
     "connect_timeout_seconds": 8,
     "output_directory": "../shortcuts",
@@ -38,9 +40,12 @@ for ct in $(pct list 2>/dev/null | awk 'NR > 1 {print $1}'); do
     ip=""
     if [ "$status" = "running" ]; then
         addresses=$(pct exec "$ct" -- hostname -I 2>/dev/null || true)
+        if [ -z "$addresses" ]; then
+            addresses=$(pct exec "$ct" -- ip -o -4 addr show 2>/dev/null | awk '$3 == "inet" {sub(/\/.*/, "", $4); print $4}' || true)
+        fi
         for address in $addresses; do
             case "$address" in
-                __LXC_IP_PREFIX__*) ip="$address"; break ;;
+                __LXC_IP_PATTERNS__) ip="$address"; break ;;
             esac
         done
     fi
@@ -122,6 +127,8 @@ def load_settings():
 
     try:
         settings = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        if "lxc_ip_prefixes" not in settings and "lxc_ip_prefix" in settings:
+            settings["lxc_ip_prefixes"] = [settings.pop("lxc_ip_prefix")]
         merged = DEFAULT_SETTINGS.copy()
         merged.update(settings)
         hosts = merged["hosts"]
@@ -192,13 +199,14 @@ class ProxmoxManager(tk.Tk):
         self.worker_running = False
         self.container_records = {}
         self.loaded_containers = []
+        self.loaded_hosts = set()
         self.settings = load_settings()
         self.hosts = self.settings["hosts"]
         self.key_path = tk.StringVar(value=str(self.settings["public_key"]))
         self.remote_key_name = tk.StringVar(value=str(self.settings["remote_key_name"]))
         self.proxmox_user = tk.StringVar(value=str(self.settings["proxmox_user"]))
         self.lxc_user = tk.StringVar(value=str(self.settings["lxc_user"]))
-        self.lxc_ip_prefix = tk.StringVar(value=str(self.settings["lxc_ip_prefix"]))
+        self.lxc_ip_prefixes = tk.StringVar(value=", ".join(self.settings["lxc_ip_prefixes"]))
         self.remote_key_directory = tk.StringVar(value=str(self.settings["remote_key_directory"]))
         self.connect_timeout = tk.StringVar(value=str(self.settings["connect_timeout_seconds"]))
         self.output_directory = tk.StringVar(value=str(self.settings["output_directory"]))
@@ -250,17 +258,23 @@ class ProxmoxManager(tk.Tk):
         ttk.Label(settings_frame, text="Użytkownik LXC:").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(settings_frame, textvariable=self.lxc_user).grid(row=0, column=3, sticky="ew", pady=2)
 
-        ttk.Label(settings_frame, text="Prefiks adresów LXC:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.lxc_ip_prefix).grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=2)
+        ttk.Label(settings_frame, text="Prefiksy IP kontenerów:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.lxc_ip_prefixes).grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=2)
         ttk.Label(settings_frame, text="Timeout SSH [s]:").grid(row=1, column=2, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(settings_frame, textvariable=self.connect_timeout).grid(row=1, column=3, sticky="ew", pady=2)
 
-        ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.remote_key_directory).grid(row=2, column=1, columnspan=3, sticky="ew", pady=2)
+        ttk.Label(
+            settings_frame,
+            text="Oddziel przecinkami, średnikami lub spacjami, np. 192.168.0., 10.20.0. — nie muszą być zgodne z siecią hosta Proxmox.",
+            foreground="#555555",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 4))
 
-        ttk.Label(settings_frame, text="Katalog skrótów BAT:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.output_directory).grid(row=3, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=2)
-        ttk.Button(settings_frame, text="Wybierz katalog…", command=self.choose_output_directory).grid(row=3, column=3, sticky="ew", pady=2)
+        ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.remote_key_directory).grid(row=3, column=1, columnspan=3, sticky="ew", pady=2)
+
+        ttk.Label(settings_frame, text="Katalog skrótów BAT:").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.output_directory).grid(row=4, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=2)
+        ttk.Button(settings_frame, text="Wybierz katalog…", command=self.choose_output_directory).grid(row=4, column=3, sticky="ew", pady=2)
 
         containers_frame = ttk.LabelFrame(main, text="Kontenery — zaznacz LXC do obsługi", padding=8)
         containers_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
@@ -323,7 +337,7 @@ class ProxmoxManager(tk.Tk):
 
         actions = ttk.LabelFrame(main, text="Operacje", padding=8)
         actions.grid(row=4, column=0, sticky="ew", pady=(10, 0))
-        for column in range(5):
+        for column in range(6):
             actions.columnconfigure(column, weight=1)
 
         self.action_buttons = [
@@ -331,6 +345,7 @@ class ProxmoxManager(tk.Tk):
             ttk.Button(actions, text="1. Wyślij klucz na hosty", command=lambda: self.start_task(self.upload_keys)),
             ttk.Button(actions, text="2. Skonfiguruj SSH w LXC", command=lambda: self.start_task(self.configure_lxc, require_containers=True)),
             ttk.Button(actions, text="3. Generuj skróty BAT", command=lambda: self.start_task(self.generate_shortcuts, require_containers=True)),
+            ttk.Button(actions, text="4. Archiwizuj stare BAT", command=self.confirm_archive_stale_shortcuts),
             ttk.Button(actions, text="Wykonaj wszystko", command=lambda: self.start_task(self.run_all, require_containers=True)),
         ]
         for column, button in enumerate(self.action_buttons):
@@ -363,6 +378,7 @@ class ProxmoxManager(tk.Tk):
             self.container_tree.delete(*self.container_tree.get_children())
             self.container_records.clear()
             self.loaded_containers.clear()
+            self.loaded_hosts.clear()
             self.container_count.set("Załadowane kontenery: 0")
 
     def _persist(self):
@@ -371,7 +387,8 @@ class ProxmoxManager(tk.Tk):
         self.settings["remote_key_name"] = self.remote_key_name.get().strip()
         self.settings["proxmox_user"] = self.proxmox_user.get().strip()
         self.settings["lxc_user"] = self.lxc_user.get().strip()
-        self.settings["lxc_ip_prefix"] = self.lxc_ip_prefix.get().strip()
+        self.settings["lxc_ip_prefixes"] = self.validated_ip_prefixes()
+        self.settings.pop("lxc_ip_prefix", None)
         self.settings["remote_key_directory"] = self.remote_key_directory.get().strip()
         self.settings["connect_timeout_seconds"] = self.connect_timeout.get().strip()
         self.settings["output_directory"] = self.output_directory.get().strip()
@@ -463,6 +480,40 @@ class ProxmoxManager(tk.Tk):
     def selected_containers(self):
         return [self.container_records[item] for item in self.container_tree.selection()]
 
+    def confirm_archive_stale_shortcuts(self):
+        if self.worker_running:
+            return
+        hosts = self.selected_hosts()
+        if not hosts:
+            messagebox.showwarning(APP_TITLE, "Zaznacz co najmniej jeden host.", parent=self)
+            return
+        if not self.loaded_containers:
+            messagebox.showwarning(APP_TITLE, "Najpierw załaduj kontenery z wybranych hostów.", parent=self)
+            return
+        missing_hosts = set(hosts) - self.loaded_hosts
+        if missing_hosts:
+            messagebox.showwarning(
+                APP_TITLE,
+                "Odśwież listę kontenerów dla wszystkich wybranych hostów przed archiwizacją.",
+                parent=self,
+            )
+            return
+        stale = self.find_stale_shortcuts(hosts)
+        if not stale:
+            messagebox.showinfo(APP_TITLE, "Nie znaleziono nieaktualnych skrótów BAT dla wybranych hostów.", parent=self)
+            return
+        names = "\n".join(f"• {path.name}" for path in stale[:12])
+        if len(stale) > 12:
+            names += f"\n… i jeszcze {len(stale) - 12}"
+        confirmed = messagebox.askyesno(
+            APP_TITLE,
+            f"Znaleziono {len(stale)} nieaktualnych skrótów:\n\n{names}\n\n"
+            "Przenieść je do podfolderu _archive?",
+            parent=self,
+        )
+        if confirmed:
+            self.start_task(self.archive_stale_shortcuts)
+
     def start_task(self, operation, require_hosts=True, require_containers=False):
         if self.worker_running:
             return
@@ -531,8 +582,9 @@ class ProxmoxManager(tk.Tk):
     def load_containers(self, hosts):
         proxmox_user = self.validated_user("proxmox_user")
         timeout = self.validated_timeout()
-        ip_prefix = self.validated_ip_prefix()
-        discover_script = DISCOVER_SCRIPT.replace("__LXC_IP_PREFIX__", ip_prefix)
+        ip_prefixes = self.validated_ip_prefixes()
+        ip_patterns = "|".join(f"{prefix}*" for prefix in ip_prefixes)
+        discover_script = DISCOVER_SCRIPT.replace("__LXC_IP_PATTERNS__", ip_patterns)
         records = []
 
         for host_index, host in enumerate(hosts, start=1):
@@ -565,6 +617,7 @@ class ProxmoxManager(tk.Tk):
             self.set_progress(host_index, len(hosts), f"{host_index}/{len(hosts)}")
 
         self.log(f"Załadowano {len(records)} kontenerów. Zaznacz te, które chcesz obsłużyć.")
+        self.loaded_hosts = set(hosts)
         self.log_queue.put(("containers", records))
 
     def test_hosts(self, hosts):
@@ -635,6 +688,47 @@ class ProxmoxManager(tk.Tk):
             f"{safe_filename_part(record['name'])}.bat"
         )
         return self.configured_output_directory() / filename
+
+    def find_stale_shortcuts(self, hosts):
+        output_dir = self.configured_output_directory()
+        if not output_dir.is_dir():
+            return []
+        selected_hosts = set(hosts)
+        expected = {
+            self.shortcut_path_for(record).resolve()
+            for record in self.loaded_containers
+            if record["host"] in selected_hosts
+        }
+        candidates = []
+        for host in selected_hosts:
+            pattern = f"Proxmox-{safe_filename_part(host)}-LXC-*.bat"
+            candidates.extend(output_dir.glob(pattern))
+        return sorted(
+            {path.resolve() for path in candidates if path.resolve() not in expected},
+            key=lambda path: path.name.lower(),
+        )
+
+    def archive_stale_shortcuts(self, hosts):
+        stale = self.find_stale_shortcuts(hosts)
+        if not stale:
+            self.log("Nie znaleziono nieaktualnych skrótów BAT.")
+            return
+        archive_dir = self.configured_output_directory() / "_archive" / datetime.now().strftime("%Y%m%d-%H%M%S")
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        for index, source in enumerate(stale, start=1):
+            self.set_progress(index - 1, len(stale), f"{index - 1}/{len(stale)}")
+            destination = archive_dir / source.name
+            suffix = 1
+            while destination.exists():
+                destination = archive_dir / f"{source.stem}-{suffix}{source.suffix}"
+                suffix += 1
+            shutil.move(str(source), str(destination))
+            self.log(f"Zarchiwizowano: {source.name} -> {archive_dir}")
+            self.set_progress(index, len(stale), f"{index}/{len(stale)}")
+        for record in self.loaded_containers:
+            record["bat"] = self.shortcut_path_for(record).is_file()
+        self.log_queue.put(("refresh_containers", None))
+        self.log(f"Zarchiwizowano {len(stale)} nieaktualnych skrótów. Pliki można odzyskać z {archive_dir}")
 
     def show_container_records(self, records):
         self.loaded_containers = records
@@ -819,11 +913,21 @@ class ProxmoxManager(tk.Tk):
             raise ValueError("connect_timeout_seconds musi mieścić się w zakresie 1-300.")
         return timeout
 
-    def validated_ip_prefix(self):
-        prefix = str(self.settings["lxc_ip_prefix"]).strip()
-        if not re.fullmatch(r"[0-9.]+", prefix):
-            raise ValueError("lxc_ip_prefix może zawierać tylko cyfry i kropki.")
-        return prefix
+    def validated_ip_prefixes(self):
+        raw = self.lxc_ip_prefixes.get() if hasattr(self, "lxc_ip_prefixes") else self.settings["lxc_ip_prefixes"]
+        values = raw if isinstance(raw, list) else re.split(r"[,;\s]+", str(raw).strip())
+        prefixes = []
+        for value in values:
+            prefix = str(value).strip()
+            if not prefix:
+                continue
+            if not re.fullmatch(r"[0-9.]+", prefix):
+                raise ValueError("Prefiksy LXC mogą zawierać tylko cyfry i kropki.")
+            if prefix not in prefixes:
+                prefixes.append(prefix)
+        if not prefixes:
+            raise ValueError("Podaj co najmniej jeden prefiks adresów LXC.")
+        return prefixes
 
     def configured_output_directory(self):
         configured = Path(os.path.expandvars(os.path.expanduser(str(self.settings["output_directory"]))))
