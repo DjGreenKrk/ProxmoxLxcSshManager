@@ -1,11 +1,18 @@
 {
   "hosts": [
-    "192.168.1.100",
-    "192.168.1.101"
+    {
+      "address": "192.168.1.100",
+      "user": "root",
+      "port": 22
+    },
+    {
+      "address": "192.168.1.101",
+      "user": "admin",
+      "port": 2222
+    }
   ],
   "public_key": "~/.ssh/id_ed25519.pub",
   "remote_key_name": "proxmox_lxc_access.pub",
-  "proxmox_user": "root",
   "lxc_user": "root",
   "lxc_ip_prefixes": [
     "192.168.1.",

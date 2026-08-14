@@ -2,7 +2,6 @@
 
 ## Najbliższe usprawnienia
 
-- oddzielny użytkownik i port SSH dla każdego hosta;
 - tryb podglądu bez wprowadzania zmian;
 - obsługa instalacji SSH w systemach używających `apk` i `dnf`;
 - pasek postępu i anulowanie kolejnych operacji;
