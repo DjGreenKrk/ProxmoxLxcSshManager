@@ -1,6 +1,6 @@
 # Proxmox LXC SSH Manager
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/releases)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -8,7 +8,7 @@
 
 Graficzne narzędzie dla Windows do zarządzania dostępem SSH do kontenerów LXC na hostach Proxmox.
 
-Aktualna wersja rozwojowa: **0.5.0**
+Aktualna wersja rozwojowa: **0.6.0**
 
 ## Funkcje
 
@@ -30,6 +30,9 @@ Aktualna wersja rozwojowa: **0.5.0**
 - zapisywanie ustawień użytkownika w lokalnym pliku JSON.
 - tryb podglądu pokazujący plan operacji bez wysyłania kluczy i modyfikowania LXC lub skrótów;
 - instalowanie OpenSSH przez `apt-get`, `apk` albo `dnf` oraz obsługę systemd i OpenRC.
+- zakładkowy interfejs z osobnymi widokami hostów i kontenerów, licznikami zaznaczeń oraz narzędziami dziennika.
+- przełączany jasny i ciemny motyw zapamiętywany w lokalnym configu.
+- bezpieczne anulowanie długiej pracy przed kolejnym hostem, LXC lub etapem zbiorczym.
 
 ## Wymagania
 
@@ -47,6 +50,10 @@ Z katalogu projektu:
 python .\app\ProxmoxLxcSshManager.py
 ```
 
+Można również użyć przenośnego `ProxmoxLxcSshManager.exe`, który nie wymaga
+instalowania Pythona. Przy pierwszym uruchomieniu EXE config i katalog `shortcuts`
+zostaną utworzone obok programu.
+
 Przy pierwszym uruchomieniu aplikacja tworzy prywatny plik
 `app/ProxmoxLxcSshManager.config.json` na podstawie ustawień domyślnych.
 Plik jest pomijany przez Git, ponieważ może zawierać adresy i ścieżki użytkownika.
@@ -59,6 +66,13 @@ Plik jest pomijany przez Git, ponieważ może zawierać adresy i ścieżki użyt
 4. Załaduj kontenery i zaznacz wybrane LXC.
 5. Skonfiguruj SSH i wygeneruj skróty BAT.
 
+Przycisk `Wykonaj dla zaznaczonych LXC` realizuje tylko krok 5 dla wybranych
+kontenerów. Nie generuje klucza i nie wysyła go ponownie na hosty Proxmox.
+
+Podczas pracy dostępny jest przycisk `Anuluj`. Żądanie nie przerywa brutalnie
+aktualnego `pct`, instalacji pakietu ani zapisu pliku; zatrzymuje wykonanie przed
+kolejnym bezpiecznym krokiem i zapisuje informację w dzienniku.
+
 Wyniki diagnostyki są bieżącym stanem sesji i nie są zapisywane w configu.
 Przycisk `Zaufaj nowym kluczom` używa polityki OpenSSH `accept-new`: zapisuje
 nowe fingerprinty, ale odrzuca klucze znanych hostów, które uległy zmianie.
@@ -66,9 +80,12 @@ nowe fingerprinty, ale odrzuca klucze znanych hostów, które uległy zmianie.
 Wygenerowane skróty trafiają domyślnie do katalogu `shortcuts`.
 Nieaktualne skróty można przenieść do datowanego podfolderu `shortcuts/_archive`.
 
-Prefiksy IP służą do wyboru właściwego adresu z `hostname -I` wewnątrz kontenera.
-Nie muszą należeć do tej samej sieci co host Proxmox. Kilka wartości można podać
-po przecinku, średniku lub spacji, np. `192.168.0., 10.20.0., 172.16.5.`.
+Adres LXC jest wykrywany na interfejsach sieciowych skonfigurowanych w Proxmox.
+Aplikacja preferuje interfejs trasy domyślnej, następnie `net0` i kolejne
+interfejsy LXC. Mosty Dockera, VPN-y i inne interfejsy utworzone wewnątrz
+kontenera nie wpływają na wybór. Nietypowy adres można trwale nadpisać przyciskiem
+`Edytuj IP` lub dwuklikiem w kolumnie adresu. Nadpisanie zapisuje host, CTID,
+nazwę LXC i IPv4 w lokalnym configu.
 
 Każdy host Proxmox ma własny profil połączenia w formacie `użytkownik@adres:port`.
 Starszy config z tekstową listą hostów i globalnym `proxmox_user` jest migrowany
@@ -88,3 +105,14 @@ python -m unittest discover -s tests -v
 ```
 
 Ten sam zestaw jest uruchamiany przez GitHub Actions na Pythonie 3.10 i 3.12.
+
+## Budowanie pakietu Windows
+
+Wymagany jest PyInstaller. Z katalogu projektu uruchom:
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+Skrypt uruchamia testy, buduje pojedynczy plik EXE z ikoną aplikacji i tworzy
+archiwum ZIP w katalogu `dist`.

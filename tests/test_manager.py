@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,9 +19,16 @@ class VersionTests(unittest.TestCase):
     def test_source_version_matches_version_file(self):
         self.assertEqual(manager.APP_VERSION, (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip())
 
+    def test_windows_packaging_assets_exist(self):
+        self.assertTrue((PROJECT_ROOT / "app" / "assets" / "ProxmoxLxcSshManager_logo.png").is_file())
+        self.assertTrue((PROJECT_ROOT / "app" / "assets" / "ProxmoxLxcSshManager_logo_64.png").is_file())
+        self.assertTrue((PROJECT_ROOT / "app" / "assets" / "ProxmoxLxcSshManager_logo.ico").is_file())
+        self.assertTrue((PROJECT_ROOT / "packaging" / "ProxmoxLxcSshManager.spec").is_file())
+        self.assertTrue((PROJECT_ROOT / "scripts" / "build_windows.ps1").is_file())
+
 
 class SettingsMigrationTests(unittest.TestCase):
-    def test_legacy_hosts_and_prefix_are_migrated(self):
+    def test_legacy_hosts_are_migrated_and_obsolete_prefix_is_removed(self):
         legacy = {
             "hosts": ["192.168.0.9", "pve.example.test"],
             "proxmox_user": "operator",
@@ -39,11 +47,13 @@ class SettingsMigrationTests(unittest.TestCase):
                 {"address": "pve.example.test", "user": "operator", "port": 22},
             ],
         )
-        self.assertEqual(settings["lxc_ip_prefixes"], ["10.20.0."])
+        self.assertNotIn("lxc_ip_prefixes", settings)
+        self.assertNotIn("lxc_ip_prefix", settings)
         self.assertNotIn("proxmox_user", settings)
 
     def test_current_host_name_is_preserved(self):
         current = {
+            "dark_mode": True,
             "hosts": [
                 {
                     "address": "192.168.1.100",
@@ -60,6 +70,21 @@ class SettingsMigrationTests(unittest.TestCase):
                 settings = manager.load_settings()
 
         self.assertEqual(settings["hosts"], current["hosts"])
+        self.assertTrue(settings["dark_mode"])
+
+    def test_readable_lxc_ip_override_is_preserved(self):
+        current = {
+            "lxc_ip_overrides": [
+                {"host": "192.168.0.10", "ct": "105", "name": "n8n", "ip": "10.0.0.200"}
+            ]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps(current), encoding="utf-8")
+            with patch.object(manager, "CONFIG_FILE", config):
+                settings = manager.load_settings()
+
+        self.assertEqual(settings["lxc_ip_overrides"], current["lxc_ip_overrides"])
 
 
 class SshCommandTests(unittest.TestCase):
@@ -75,6 +100,7 @@ class SshCommandTests(unittest.TestCase):
         self.assertIn("ConnectTimeout=9", command)
         self.assertEqual(run.call_args.kwargs["input"], b"true\n")
         self.assertEqual(run.call_args.kwargs["timeout"], 360)
+        self.assertEqual(run.call_args.kwargs["creationflags"], manager.HIDDEN_PROCESS_FLAGS)
 
     def test_run_ssh_script_reports_command_timeout(self):
         with patch.object(
@@ -123,11 +149,17 @@ class SshCommandTests(unittest.TestCase):
             self.assertIn(service_manager, manager.CONFIGURE_SCRIPT)
         self.assertIn("timeout __PCT_CONFIGURATION_TIMEOUT__ pct exec", manager.CONFIGURE_SCRIPT)
 
+    def test_discovery_uses_proxmox_interface_names(self):
+        self.assertIn("interfaces=$(pct config", manager.DISCOVER_SCRIPT)
+        self.assertIn('ip -o -4 addr show dev "$iface"', manager.DISCOVER_SCRIPT)
+        self.assertIn("default_dev=$(ip -4 route show default", manager.DISCOVER_SCRIPT)
+
 
 class DryRunTests(unittest.TestCase):
     def test_upload_preview_does_not_call_scp_or_require_existing_key(self):
         messages = []
         fake = SimpleNamespace(
+            raise_if_cancelled=lambda _context: None,
             key_path=SimpleNamespace(get=lambda: "missing-preview-key.pub"),
             dry_run=SimpleNamespace(get=lambda: True),
             validated_remote_key_path=lambda: "/root/access.pub",
@@ -143,6 +175,31 @@ class DryRunTests(unittest.TestCase):
         run.assert_not_called()
         self.assertTrue(any("PODGLĄD" in message for message in messages))
 
+    def test_upload_uses_hidden_scp_when_key_authentication_works(self):
+        messages = []
+        completed = SimpleNamespace(returncode=0, stdout=b"")
+        with tempfile.TemporaryDirectory() as directory:
+            key = Path(directory) / "access.pub"
+            key.write_text("ssh-ed25519 AAAA test", encoding="utf-8")
+            fake = SimpleNamespace(
+                raise_if_cancelled=lambda _context: None,
+                key_path=SimpleNamespace(get=lambda: str(key)),
+                dry_run=SimpleNamespace(get=lambda: False),
+                validated_remote_key_path=lambda: "/root/access.pub",
+                validated_timeout=lambda: 8,
+                host_address=lambda host: host["address"],
+                log=messages.append,
+            )
+            hosts = [{"address": "192.0.2.10", "user": "root", "port": 22}]
+
+            with patch.object(manager.subprocess, "run", return_value=completed) as run:
+                manager.ProxmoxManager.upload_keys(fake, hosts)
+
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        self.assertIn("BatchMode=yes", command)
+        self.assertEqual(run.call_args.kwargs["creationflags"], manager.HIDDEN_PROCESS_FLAGS)
+
 
 class ContainerDiagnosticsTests(unittest.TestCase):
     def test_timed_out_parallel_check_is_retried_once(self):
@@ -155,6 +212,8 @@ class ContainerDiagnosticsTests(unittest.TestCase):
             "ip": "192.0.2.155",
         }
         fake = SimpleNamespace(
+            raise_if_cancelled=lambda _context: None,
+            cancel_event=threading.Event(),
             validated_user=lambda _name: "root",
             validated_timeout=lambda: 8,
             log_queue=SimpleNamespace(put=lambda _item: None),
@@ -174,6 +233,47 @@ class ContainerDiagnosticsTests(unittest.TestCase):
         self.assertTrue(any("ponawiam sekwencyjnie" in message for message in messages))
 
 
+class ContextualWorkflowTests(unittest.TestCase):
+    def test_selected_lxc_workflow_does_not_generate_or_upload_keys(self):
+        calls = []
+        fake = SimpleNamespace(
+            raise_if_cancelled=lambda _context: None,
+            host_address=lambda host: host["address"],
+            configure_lxc=lambda hosts, containers: calls.append(("configure", hosts, containers)),
+            check_container_ssh=lambda hosts, containers: calls.append(("check", hosts, containers)),
+            generate_shortcuts=lambda hosts, containers: calls.append(("shortcuts", hosts, containers)),
+            generate_ssh_key=lambda: calls.append(("generate_key",)),
+            upload_keys=lambda hosts: calls.append(("upload", hosts)),
+        )
+        hosts = [
+            {"address": "pve-one.example.test"},
+            {"address": "pve-two.example.test"},
+        ]
+        containers = [{"host": "pve-two.example.test", "ct": "155"}]
+
+        manager.ProxmoxManager.run_selected_lxc(fake, hosts, containers)
+
+        self.assertEqual([call[0] for call in calls], ["configure", "check", "shortcuts"])
+        self.assertEqual(calls[0][1], [hosts[1]])
+
+    def test_selected_lxc_workflow_stops_before_next_stage_after_cancel(self):
+        cancel_event = threading.Event()
+        calls = []
+        fake = SimpleNamespace(cancel_event=cancel_event)
+        fake.raise_if_cancelled = lambda context: manager.ProxmoxManager.raise_if_cancelled(fake, context)
+        fake.host_address = lambda host: host["address"]
+        fake.configure_lxc = lambda hosts, containers: (calls.append("configure"), cancel_event.set())
+        fake.check_container_ssh = lambda hosts, containers: calls.append("check")
+        fake.generate_shortcuts = lambda hosts, containers: calls.append("shortcuts")
+        hosts = [{"address": "pve.example.test"}]
+        containers = [{"host": "pve.example.test", "ct": "155"}]
+
+        with self.assertRaises(manager.OperationCancelled):
+            manager.ProxmoxManager.run_selected_lxc(fake, hosts, containers)
+
+        self.assertEqual(calls, ["configure"])
+
+
 class FormattingTests(unittest.TestCase):
     def test_host_label_includes_discovered_name(self):
         profile = {"address": "192.168.1.100", "user": "root", "port": 22, "name": "pve-one"}
@@ -184,6 +284,7 @@ class FormattingTests(unittest.TestCase):
 
     def test_filename_part_replaces_windows_invalid_characters(self):
         self.assertEqual(manager.safe_filename_part('lxc:<test>|?*'), "lxc__test____")
+
 
 
 if __name__ == "__main__":

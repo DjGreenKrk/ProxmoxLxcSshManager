@@ -14,12 +14,17 @@
   "public_key": "~/.ssh/id_ed25519.pub",
   "remote_key_name": "proxmox_lxc_access.pub",
   "lxc_user": "root",
-  "lxc_ip_prefixes": [
-    "192.168.1.",
-    "10.0.0."
+  "lxc_ip_overrides": [
+    {
+      "host": "192.168.1.100",
+      "ct": "105",
+      "name": "n8n",
+      "ip": "10.0.0.200"
+    }
   ],
   "remote_key_directory": "/root",
   "connect_timeout_seconds": 8,
   "output_directory": "../shortcuts",
-  "dry_run": false
+  "dry_run": false,
+  "dark_mode": false
 }

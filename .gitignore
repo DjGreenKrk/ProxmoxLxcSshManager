@@ -6,3 +6,7 @@ shortcuts/*
 __pycache__/
 *.py[cod]
 .vscode/*
+
+# Windows build artifacts
+build/
+dist/

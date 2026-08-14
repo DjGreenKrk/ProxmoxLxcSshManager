@@ -1,9 +1,11 @@
+import ipaddress
 import json
 import os
 import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,10 +14,14 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 APP_TITLE = f"Proxmox LXC SSH Manager v{APP_VERSION}"
-OUTPUT_DIR = Path(__file__).resolve().parent
+FROZEN = bool(getattr(sys, "frozen", False))
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+OUTPUT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 CONFIG_FILE = OUTPUT_DIR / "ProxmoxLxcSshManager.config.json"
+APP_ICON = RESOURCE_DIR / "assets" / "ProxmoxLxcSshManager_logo.ico"
+APP_LOGO = RESOURCE_DIR / "assets" / "ProxmoxLxcSshManager_logo_64.png"
 DEFAULT_HOSTS = [
     {"address": "192.168.1.100", "user": "root", "port": 22},
     {"address": "192.168.1.101", "user": "root", "port": 22},
@@ -24,16 +30,24 @@ DEFAULT_PUBLIC_KEY = Path.home() / ".ssh" / "id_ed25519.pub"
 DEFAULT_REMOTE_KEY_NAME = "proxmox_lxc_access.pub"
 PCT_DISCOVERY_TIMEOUT_SECONDS = 15
 PCT_CONFIGURATION_TIMEOUT_SECONDS = 300
+HIDDEN_PROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+class OperationCancelled(Exception):
+    """Raised after the user requests a safe stop between operation steps."""
+
+
 DEFAULT_SETTINGS = {
     "hosts": DEFAULT_HOSTS,
     "public_key": str(DEFAULT_PUBLIC_KEY),
     "remote_key_name": DEFAULT_REMOTE_KEY_NAME,
     "lxc_user": "root",
-    "lxc_ip_prefixes": ["192.168.1."],
+    "lxc_ip_overrides": [],
     "remote_key_directory": "/root",
     "connect_timeout_seconds": 8,
-    "output_directory": "../shortcuts",
+    "output_directory": "shortcuts" if FROZEN else "../shortcuts",
     "dry_run": False,
+    "dark_mode": False,
 }
 
 DISCOVER_SCRIPT = r'''set -u
@@ -43,18 +57,27 @@ for ct in $(pct list 2>/dev/null | awk 'NR > 1 {print $1}'); do
     name=$(pct config "$ct" 2>/dev/null | sed -n 's/^hostname: //p')
     [ -z "$name" ] && name="lxc-$ct"
     ip=""
+    ip_source="none"
     if [ "$status" = "running" ]; then
-        addresses=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- hostname -I 2>/dev/null || true)
-        if [ -z "$addresses" ]; then
-            addresses=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- ip -o -4 addr show 2>/dev/null | awk '$3 == "inet" {sub(/\/.*/, "", $4); print $4}' || true)
-        fi
-        for address in $addresses; do
-            case "$address" in
-                __LXC_IP_PATTERNS__) ip="$address"; break ;;
-            esac
-        done
+        interfaces=$(pct config "$ct" 2>/dev/null | sed -n 's/^net[0-9][0-9]*:.*name=\([^,]*\).*/\1/p' | tr '\n' ' ')
+        network_result=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- sh -c '
+            default_dev=$(ip -4 route show default 2>/dev/null | awk "NR == 1 {print \$5}")
+            for iface in "$default_dev" "$@"; do
+                [ -z "$iface" ] && continue
+                address=$(ip -o -4 addr show dev "$iface" scope global 2>/dev/null | awk "NR == 1 {sub(/\\/.*/, \"\", \$4); print \$4}")
+                if [ -n "$address" ]; then
+                    [ "$iface" = "$default_dev" ] && source=default || source=proxmox
+                    printf "%s|%s\n" "$address" "$source"
+                    exit 0
+                fi
+            done
+            address=$(hostname -I 2>/dev/null | awk "{for (i=1; i<=NF; i++) if (\$i ~ /^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$/ && \$i !~ /^127\\./) {print \$i; exit}}")
+            [ -n "$address" ] && printf "%s|fallback\n" "$address"
+        ' sh $interfaces 2>/dev/null || true)
+        ip=${network_result%%|*}
+        [ "$network_result" != "$ip" ] && ip_source=${network_result#*|}
     fi
-    printf '%s|%s|%s|%s\n' "$ct" "$name" "$status" "$ip"
+    printf '%s|%s|%s|%s|%s\n' "$ct" "$name" "$status" "$ip" "$ip_source"
 done
 '''
 
@@ -140,10 +163,10 @@ def load_settings():
 
     try:
         settings = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        if "lxc_ip_prefixes" not in settings and "lxc_ip_prefix" in settings:
-            settings["lxc_ip_prefixes"] = [settings.pop("lxc_ip_prefix")]
         merged = DEFAULT_SETTINGS.copy()
         merged.update(settings)
+        merged.pop("lxc_ip_prefix", None)
+        merged.pop("lxc_ip_prefixes", None)
         hosts = merged["hosts"]
         legacy_user = str(settings.get("proxmox_user", "root"))
         if not isinstance(hosts, list):
@@ -166,6 +189,28 @@ def load_settings():
                 normalized["name"] = name
             normalized_hosts.append(normalized)
         merged["hosts"] = normalized_hosts
+        overrides = merged.get("lxc_ip_overrides", [])
+        if isinstance(overrides, dict):
+            overrides = [
+                {"host": key.rsplit("|", 1)[0], "ct": key.rsplit("|", 1)[-1], "name": "", "ip": value}
+                for key, value in overrides.items() if "|" in key
+            ]
+        if not isinstance(overrides, list):
+            raise ValueError("Pole lxc_ip_overrides musi być listą.")
+        normalized_overrides = []
+        for override in overrides:
+            if not isinstance(override, dict):
+                raise ValueError("Każde nadpisanie IP LXC musi być obiektem.")
+            host = str(override.get("host", "")).strip()
+            ct = str(override.get("ct", "")).strip()
+            name = str(override.get("name", "")).strip()
+            address = ipaddress.ip_address(str(override.get("ip", "")).strip())
+            if address.version != 4:
+                raise ValueError(f"Nadpisany adres LXC musi być IPv4: {address}")
+            if not host or not ct.isdigit():
+                raise ValueError("Nadpisanie IP LXC wymaga hosta i numerycznego CTID.")
+            normalized_overrides.append({"host": host, "ct": ct, "name": name, "ip": str(address)})
+        merged["lxc_ip_overrides"] = normalized_overrides
         merged.pop("proxmox_user", None)
         return merged
     except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -191,6 +236,7 @@ def run_ssh_script(host, script, user="root", port=22, timeout=8, command_timeou
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=command_timeout,
+            creationflags=HIDDEN_PROCESS_FLAGS,
             check=False,
         )
     except subprocess.TimeoutExpired as error:
@@ -212,6 +258,7 @@ def check_ssh_access(host, user="root", timeout=8, accept_new=False):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout + 5,
+            creationflags=HIDDEN_PROCESS_FLAGS,
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -280,10 +327,16 @@ class ProxmoxManager(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("980x850")
-        self.minsize(820, 700)
+        if APP_ICON.is_file():
+            try:
+                self.iconbitmap(default=str(APP_ICON))
+            except tk.TclError:
+                pass
+        self.geometry("1180x820")
+        self.minsize(940, 760)
         self.log_queue = queue.Queue()
         self.worker_running = False
+        self.cancel_event = threading.Event()
         self.container_records = {}
         self.loaded_containers = []
         self.loaded_hosts = set()
@@ -292,80 +345,156 @@ class ProxmoxManager(tk.Tk):
         self.key_path = tk.StringVar(value=str(self.settings["public_key"]))
         self.remote_key_name = tk.StringVar(value=str(self.settings["remote_key_name"]))
         self.lxc_user = tk.StringVar(value=str(self.settings["lxc_user"]))
-        self.lxc_ip_prefixes = tk.StringVar(value=", ".join(self.settings["lxc_ip_prefixes"]))
+        self.lxc_ip_overrides = {
+            f"{override['host']}|{override['ct']}": dict(override)
+            for override in self.settings.get("lxc_ip_overrides", [])
+        }
         self.remote_key_directory = tk.StringVar(value=str(self.settings["remote_key_directory"]))
         self.connect_timeout = tk.StringVar(value=str(self.settings["connect_timeout_seconds"]))
         self.output_directory = tk.StringVar(value=str(self.settings["output_directory"]))
         self.dry_run = tk.BooleanVar(value=bool(self.settings.get("dry_run", False)))
+        self.dark_mode = tk.BooleanVar(value=bool(self.settings.get("dark_mode", False)))
         self.status = tk.StringVar(value="Gotowy")
         self.container_count = tk.StringVar(value="Załadowane kontenery: 0")
+        self.host_selection_count = tk.StringVar(value="Zaznaczone hosty: 0")
+        self.container_selection_count = tk.StringVar(value="Zaznaczone LXC: 0")
         self.container_filter = tk.StringVar(value="Wszystkie")
         self.container_search = tk.StringVar()
         self.progress_text = tk.StringVar()
         self._build_ui()
+        self.apply_theme()
         self._refresh_hosts()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self._drain_log_queue)
 
     def _build_ui(self):
-        main = ttk.Frame(self, padding=12)
+        style = ttk.Style(self)
+        style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"))
+        style.configure("Subtitle.TLabel", foreground="#555555")
+        style.configure("Section.TLabelframe.Label", font=("Segoe UI", 10, "bold"))
+        style.configure("Containers.Treeview", rowheight=26)
+        style.map("Containers.Treeview", foreground=[("selected", "#ffffff")], background=[("selected", "#0078d7")])
+
+        main = ttk.Frame(self, padding=14)
         main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=1)
-        main.rowconfigure(3, weight=2, minsize=230)
-        main.rowconfigure(5, weight=1)
+        main.rowconfigure(1, weight=3)
+        main.rowconfigure(2, weight=1)
 
-        hosts_frame = ttk.LabelFrame(main, text="Hosty Proxmox", padding=8)
-        hosts_frame.grid(row=0, column=0, sticky="nsew")
+        header = ttk.Frame(main)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.columnconfigure(1, weight=1)
+        self.logo_image = None
+        if APP_LOGO.is_file():
+            try:
+                self.logo_image = tk.PhotoImage(file=str(APP_LOGO))
+                ttk.Label(header, image=self.logo_image).grid(row=0, column=0, rowspan=2, padx=(0, 12))
+            except tk.TclError:
+                pass
+        ttk.Label(header, text="Proxmox LXC SSH Manager", style="Title.TLabel").grid(row=0, column=1, sticky="sw")
+        ttk.Label(
+            header,
+            text="Zarządzanie dostępem SSH i skrótami do kontenerów LXC",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=1, sticky="nw")
+        ttk.Checkbutton(
+            header,
+            text="Tryb ciemny",
+            variable=self.dark_mode,
+            command=self.toggle_theme,
+        ).grid(row=0, column=2, rowspan=2, padx=(12, 8))
+        ttk.Label(header, text=f"v{APP_VERSION}").grid(row=0, column=3, rowspan=2, padx=(8, 0))
+
+        self.notebook = ttk.Notebook(main)
+        self.notebook.grid(row=1, column=0, sticky="nsew")
+        connection_tab = ttk.Frame(self.notebook, padding=10)
+        self.containers_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(connection_tab, text="1. Hosty i ustawienia")
+        self.notebook.add(self.containers_tab, text="2. Kontenery LXC")
+        connection_tab.columnconfigure(0, weight=1)
+        connection_tab.columnconfigure(1, weight=1)
+        connection_tab.rowconfigure(0, weight=1)
+        self.containers_tab.columnconfigure(0, weight=1)
+        self.containers_tab.rowconfigure(0, weight=1)
+
+        hosts_frame = ttk.LabelFrame(connection_tab, text="Hosty Proxmox", padding=10, style="Section.TLabelframe")
+        hosts_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         hosts_frame.columnconfigure(0, weight=1)
         hosts_frame.rowconfigure(0, weight=1)
 
-        self.host_list = tk.Listbox(hosts_frame, selectmode=tk.EXTENDED, height=6)
+        self.host_list = tk.Listbox(hosts_frame, selectmode=tk.EXTENDED, height=10, exportselection=False)
         self.host_list.grid(row=0, column=0, rowspan=6, sticky="nsew", padx=(0, 8))
+        self.host_list.bind("<<ListboxSelect>>", lambda _event: self.update_selection_counts())
         ttk.Button(hosts_frame, text="Dodaj host", command=self.add_host).grid(row=0, column=1, sticky="ew", pady=2)
         ttk.Button(hosts_frame, text="Edytuj host", command=self.edit_host).grid(row=1, column=1, sticky="ew", pady=2)
         ttk.Button(hosts_frame, text="Usuń host", command=self.remove_hosts).grid(row=2, column=1, sticky="ew", pady=2)
         ttk.Button(hosts_frame, text="Zaznacz wszystkie", command=self.select_all).grid(row=3, column=1, sticky="ew", pady=2)
         ttk.Button(hosts_frame, text="Załaduj kontenery", command=lambda: self.start_task(self.load_containers)).grid(row=4, column=1, sticky="ew", pady=2)
         ttk.Button(hosts_frame, text="Testuj hosty", command=lambda: self.start_task(self.test_hosts)).grid(row=5, column=1, sticky="ew", pady=2)
+        ttk.Label(hosts_frame, textvariable=self.host_selection_count).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
-        key_frame = ttk.LabelFrame(main, text="Klucz publiczny SSH", padding=8)
-        key_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        details = ttk.Frame(connection_tab)
+        details.grid(row=0, column=1, sticky="nsew")
+        details.columnconfigure(0, weight=1)
+
+        key_frame = ttk.LabelFrame(details, text="Klucz publiczny SSH", padding=10, style="Section.TLabelframe")
+        key_frame.grid(row=0, column=0, sticky="ew")
         key_frame.columnconfigure(0, weight=1)
         ttk.Entry(key_frame, textvariable=self.key_path).grid(row=0, column=0, sticky="ew", padx=(0, 8))
         ttk.Button(key_frame, text="Wybierz plik…", command=self.choose_key).grid(row=0, column=1)
         ttk.Label(key_frame, text="Nazwa na hoście Proxmox:").grid(row=1, column=0, sticky="w", pady=(8, 2))
         ttk.Entry(key_frame, textvariable=self.remote_key_name).grid(row=2, column=0, columnspan=2, sticky="ew")
 
-        settings_frame = ttk.LabelFrame(main, text="Ustawienia połączeń i wyników", padding=8)
-        settings_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        settings_frame = ttk.LabelFrame(details, text="Ustawienia połączeń i wyników", padding=10, style="Section.TLabelframe")
+        settings_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         settings_frame.columnconfigure(1, weight=1)
-        settings_frame.columnconfigure(3, weight=1)
 
         ttk.Label(settings_frame, text="Użytkownik LXC:").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.lxc_user).grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=2)
-        ttk.Label(settings_frame, text="Dane Proxmox:").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=2)
-        ttk.Label(settings_frame, text="ustawiane osobno przy każdym hoście").grid(row=0, column=3, sticky="w", pady=2)
-
-        ttk.Label(settings_frame, text="Prefiksy IP kontenerów:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.lxc_ip_prefixes).grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=2)
-        ttk.Label(settings_frame, text="Timeout SSH [s]:").grid(row=1, column=2, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.connect_timeout).grid(row=1, column=3, sticky="ew", pady=2)
+        ttk.Entry(settings_frame, textvariable=self.lxc_user).grid(row=0, column=1, sticky="ew", pady=2)
 
         ttk.Label(
             settings_frame,
-            text="Oddziel przecinkami, średnikami lub spacjami, np. 192.168.0., 10.20.0. — nie muszą być zgodne z siecią hosta Proxmox.",
-            foreground="#555555",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 4))
+            text="Adresy LXC są wykrywane z interfejsów skonfigurowanych w Proxmox; ręczne IP można ustawić w zakładce kontenerów.",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 6))
 
-        ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.remote_key_directory).grid(row=3, column=1, columnspan=3, sticky="ew", pady=2)
+        ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.remote_key_directory).grid(row=2, column=1, sticky="ew", pady=2)
+
+        ttk.Label(settings_frame, text="Timeout SSH [s]:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.connect_timeout).grid(row=3, column=1, sticky="ew", pady=2)
 
         ttk.Label(settings_frame, text="Katalog skrótów BAT:").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.output_directory).grid(row=4, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=2)
-        ttk.Button(settings_frame, text="Wybierz katalog…", command=self.choose_output_directory).grid(row=4, column=3, sticky="ew", pady=2)
+        output_row = ttk.Frame(settings_frame)
+        output_row.grid(row=4, column=1, sticky="ew", pady=2)
+        output_row.columnconfigure(0, weight=1)
+        ttk.Entry(output_row, textvariable=self.output_directory).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(output_row, text="Wybierz…", command=self.choose_output_directory).grid(row=0, column=1)
 
-        containers_frame = ttk.LabelFrame(main, text="Kontenery — zaznacz LXC do obsługi", padding=8)
-        containers_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        host_actions = ttk.LabelFrame(details, text="Operacje hosta", padding=10, style="Section.TLabelframe")
+        host_actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        host_actions.columnconfigure(0, weight=1)
+        host_actions.columnconfigure(1, weight=1)
+        generate_key_button = ttk.Button(
+            host_actions,
+            text="0. Wygeneruj klucz SSH",
+            command=lambda: self.start_task(self.generate_ssh_key, require_hosts=False),
+        )
+        upload_key_button = ttk.Button(
+            host_actions,
+            text="1. Wyślij klucz na hosty",
+            command=lambda: self.start_task(self.upload_keys),
+        )
+        generate_key_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        upload_key_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Checkbutton(
+            host_actions,
+            text="Tryb podglądu — nie wprowadzaj zmian",
+            variable=self.dry_run,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        containers_frame = ttk.LabelFrame(self.containers_tab, text="Kontenery — zaznacz LXC do obsługi", padding=10, style="Section.TLabelframe")
+        containers_frame.grid(row=0, column=0, sticky="nsew")
         containers_frame.columnconfigure(0, weight=1)
         containers_frame.rowconfigure(1, weight=1)
         filter_frame = ttk.Frame(containers_frame)
@@ -388,17 +517,16 @@ class ProxmoxManager(tk.Tk):
         filter_box.grid(row=0, column=3)
         search_entry.bind("<KeyRelease>", lambda _event: self.apply_container_filter())
         filter_box.bind("<<ComboboxSelected>>", lambda _event: self.apply_container_filter())
-        style = ttk.Style(self)
-        style.configure("Containers.Treeview", foreground="#000000", background="#ffffff", fieldbackground="#ffffff", rowheight=22)
-        style.map("Containers.Treeview", foreground=[("selected", "#ffffff")], background=[("selected", "#0078d7")])
         self.container_tree = ttk.Treeview(
             containers_frame,
             columns=("host", "ct", "name", "status", "ip", "ssh", "bat"),
             show="headings",
             selectmode="extended",
-            height=8,
+            height=14,
             style="Containers.Treeview",
         )
+        self.container_tree.bind("<<TreeviewSelect>>", lambda _event: self.update_selection_counts())
+        self.container_tree.bind("<Double-1>", self.edit_container_ip_from_event)
         headings = {
             "host": ("Host Proxmox", 145),
             "ct": ("CTID", 60),
@@ -418,61 +546,183 @@ class ProxmoxManager(tk.Tk):
         container_footer = ttk.Frame(containers_frame)
         container_footer.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         container_footer.columnconfigure(0, weight=1)
-        ttk.Label(container_footer, textvariable=self.container_count).grid(row=0, column=0, sticky="w")
-        ttk.Button(container_footer, text="Sprawdź SSH", command=lambda: self.start_task(self.check_container_ssh, require_containers=True)).grid(row=0, column=1, padx=4)
-        ttk.Button(container_footer, text="Zaufaj nowym kluczom", command=lambda: self.start_task(self.trust_container_host_keys, require_containers=True)).grid(row=0, column=2, padx=4)
-        ttk.Button(container_footer, text="Zaznacz widoczne LXC", command=self.select_all_containers).grid(row=0, column=3, sticky="e")
+        counts = ttk.Frame(container_footer)
+        counts.grid(row=0, column=0, sticky="w")
+        ttk.Label(counts, textvariable=self.container_count).grid(row=0, column=0, sticky="w")
+        ttk.Label(counts, text="  •  ").grid(row=0, column=1)
+        ttk.Label(counts, textvariable=self.container_selection_count).grid(row=0, column=2, sticky="w")
+        ttk.Button(container_footer, text="Edytuj IP", command=self.edit_selected_container_ip).grid(row=0, column=1, padx=4)
+        ttk.Button(container_footer, text="Sprawdź SSH", command=lambda: self.start_task(self.check_container_ssh, require_containers=True)).grid(row=0, column=2, padx=4)
+        ttk.Button(container_footer, text="Zaufaj nowym kluczom", command=lambda: self.start_task(self.trust_container_host_keys, require_containers=True)).grid(row=0, column=3, padx=4)
+        ttk.Button(container_footer, text="Zaznacz widoczne LXC", command=self.select_all_containers).grid(row=0, column=4, sticky="e")
 
-        actions = ttk.LabelFrame(main, text="Operacje", padding=8)
-        actions.grid(row=4, column=0, sticky="ew", pady=(10, 0))
-        for column in range(6):
-            actions.columnconfigure(column, weight=1)
-
-        self.action_buttons = [
-            ttk.Button(actions, text="0. Wygeneruj klucz SSH", command=lambda: self.start_task(self.generate_ssh_key, require_hosts=False)),
-            ttk.Button(actions, text="1. Wyślij klucz na hosty", command=lambda: self.start_task(self.upload_keys)),
-            ttk.Button(actions, text="2. Skonfiguruj SSH w LXC", command=lambda: self.start_task(self.configure_lxc, require_containers=True)),
-            ttk.Button(actions, text="3. Generuj skróty BAT", command=lambda: self.start_task(self.generate_shortcuts, require_containers=True)),
-            ttk.Button(actions, text="4. Archiwizuj stare BAT", command=self.confirm_archive_stale_shortcuts),
-            ttk.Button(actions, text="Wykonaj wszystko", command=lambda: self.start_task(self.run_all, require_containers=True)),
-        ]
-        for column, button in enumerate(self.action_buttons):
+        container_actions = ttk.LabelFrame(
+            self.containers_tab,
+            text="Operacje na zaznaczonych LXC",
+            padding=10,
+            style="Section.TLabelframe",
+        )
+        container_actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for column in range(4):
+            container_actions.columnconfigure(column, weight=1)
+        configure_button = ttk.Button(
+            container_actions,
+            text="2. Skonfiguruj SSH",
+            command=lambda: self.start_task(self.configure_lxc, require_containers=True),
+        )
+        shortcuts_button = ttk.Button(
+            container_actions,
+            text="3. Generuj skróty BAT",
+            command=lambda: self.start_task(self.generate_shortcuts, require_containers=True),
+        )
+        archive_button = ttk.Button(
+            container_actions,
+            text="4. Archiwizuj stare BAT",
+            command=self.confirm_archive_stale_shortcuts,
+        )
+        run_lxc_button = ttk.Button(
+            container_actions,
+            text="▶ Wykonaj dla zaznaczonych LXC",
+            command=lambda: self.start_task(self.run_selected_lxc, require_containers=True),
+        )
+        for column, button in enumerate((configure_button, shortcuts_button, archive_button, run_lxc_button)):
             button.grid(row=0, column=column, sticky="ew", padx=3)
         ttk.Checkbutton(
-            actions,
+            container_actions,
             text="Tryb podglądu — nie wprowadzaj zmian",
             variable=self.dry_run,
-        ).grid(row=1, column=0, columnspan=6, sticky="w", padx=3, pady=(8, 0))
+        ).grid(row=1, column=0, columnspan=4, sticky="w", padx=3, pady=(8, 0))
 
-        log_frame = ttk.LabelFrame(main, text="Dziennik", padding=8)
-        log_frame.grid(row=5, column=0, sticky="nsew", pady=(10, 0))
+        self.action_buttons = [
+            generate_key_button, upload_key_button, configure_button,
+            shortcuts_button, archive_button, run_lxc_button,
+        ]
+
+        log_frame = ttk.LabelFrame(main, text="Dziennik", padding=8, style="Section.TLabelframe")
+        log_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        self.log_box = tk.Text(log_frame, wrap="word", state="disabled", font=("Consolas", 9), height=8)
+        log_frame.rowconfigure(1, weight=1)
+        log_toolbar = ttk.Frame(log_frame)
+        log_toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        log_toolbar.columnconfigure(0, weight=1)
+        ttk.Button(log_toolbar, text="Kopiuj dziennik", command=self.copy_log).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(log_toolbar, text="Wyczyść", command=self.clear_log).grid(row=0, column=2)
+        self.log_box = tk.Text(log_frame, wrap="word", state="disabled", font=("Consolas", 9), height=7)
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_box.yview)
         self.log_box.configure(yscrollcommand=scrollbar.set)
-        self.log_box.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log_box.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
 
         status_frame = ttk.Frame(main)
-        status_frame.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        status_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         status_frame.columnconfigure(0, weight=1)
         ttk.Label(status_frame, textvariable=self.status, anchor="w").grid(row=0, column=0, sticky="ew")
         self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", length=220)
         self.progress_bar.grid(row=0, column=1, padx=(8, 6))
         ttk.Label(status_frame, textvariable=self.progress_text, width=14, anchor="e").grid(row=0, column=2)
+        self.cancel_button = ttk.Button(status_frame, text="Anuluj", command=self.request_cancel, state="disabled")
+        self.cancel_button.grid(row=0, column=3, padx=(8, 0))
+
+    def update_selection_counts(self):
+        self.host_selection_count.set(f"Zaznaczone hosty: {len(self.host_list.curselection())}")
+        selected_containers = len(self.container_tree.selection()) if hasattr(self, "container_tree") else 0
+        self.container_selection_count.set(f"Zaznaczone LXC: {selected_containers}")
+
+    def toggle_theme(self):
+        self.apply_theme()
+        self.settings["dark_mode"] = self.dark_mode.get()
+        save_settings(self.settings)
+
+    def apply_theme(self):
+        dark = self.dark_mode.get()
+        palette = {
+            "background": "#171a1f" if dark else "#f0f0f0",
+            "panel": "#20242b" if dark else "#f7f7f7",
+            "field": "#2b3038" if dark else "#ffffff",
+            "foreground": "#f2f3f5" if dark else "#111111",
+            "muted": "#aeb6c2" if dark else "#555555",
+            "border": "#3a414c" if dark else "#c8c8c8",
+            "accent": "#00d85a" if dark else "#0078d7",
+            "selection": "#166b3a" if dark else "#0078d7",
+        }
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        self.configure(background=palette["background"])
+        style.configure(".", background=palette["background"], foreground=palette["foreground"])
+        style.configure("TFrame", background=palette["background"])
+        style.configure("TLabel", background=palette["background"], foreground=palette["foreground"])
+        style.configure("Title.TLabel", background=palette["background"], foreground=palette["foreground"], font=("Segoe UI", 18, "bold"))
+        style.configure("Subtitle.TLabel", background=palette["background"], foreground=palette["muted"])
+        style.configure("TLabelframe", background=palette["background"], bordercolor=palette["border"])
+        style.configure("TLabelframe.Label", background=palette["background"], foreground=palette["foreground"])
+        style.configure("Section.TLabelframe.Label", background=palette["background"], foreground=palette["foreground"], font=("Segoe UI", 10, "bold"))
+        style.configure("TButton", background=palette["panel"], foreground=palette["foreground"], bordercolor=palette["border"])
+        style.map("TButton", background=[("active", palette["field"]), ("pressed", palette["selection"])])
+        style.configure("TCheckbutton", background=palette["background"], foreground=palette["foreground"])
+        style.map("TCheckbutton", background=[("active", palette["background"])])
+        style.configure("TEntry", fieldbackground=palette["field"], foreground=palette["foreground"], insertcolor=palette["foreground"], bordercolor=palette["border"])
+        style.configure("TCombobox", fieldbackground=palette["field"], foreground=palette["foreground"], arrowcolor=palette["foreground"], bordercolor=palette["border"])
+        style.map("TCombobox", fieldbackground=[("readonly", palette["field"])], foreground=[("readonly", palette["foreground"])])
+        style.configure("TNotebook", background=palette["background"], bordercolor=palette["border"])
+        style.configure("TNotebook.Tab", background=palette["panel"], foreground=palette["foreground"], padding=(10, 5))
+        style.map("TNotebook.Tab", background=[("selected", palette["field"]), ("active", palette["field"])])
+        style.configure("Containers.Treeview", background=palette["field"], fieldbackground=palette["field"], foreground=palette["foreground"], rowheight=26, bordercolor=palette["border"])
+        style.map("Containers.Treeview", foreground=[("selected", "#ffffff")], background=[("selected", palette["selection"])])
+        style.configure("Containers.Treeview.Heading", background=palette["panel"], foreground=palette["foreground"], bordercolor=palette["border"])
+        style.map("Containers.Treeview.Heading", background=[("active", palette["field"])])
+        style.configure("Horizontal.TProgressbar", background=palette["accent"], troughcolor=palette["panel"], bordercolor=palette["border"])
+        self.option_add("*TCombobox*Listbox.background", palette["field"])
+        self.option_add("*TCombobox*Listbox.foreground", palette["foreground"])
+        self.option_add("*TCombobox*Listbox.selectBackground", palette["selection"])
+        if hasattr(self, "host_list"):
+            self.host_list.configure(
+                background=palette["field"], foreground=palette["foreground"],
+                selectbackground=palette["selection"], selectforeground="#ffffff",
+                highlightbackground=palette["border"], highlightcolor=palette["accent"],
+            )
+        if hasattr(self, "log_box"):
+            self.log_box.configure(
+                background=palette["field"], foreground=palette["foreground"],
+                insertbackground=palette["foreground"], selectbackground=palette["selection"],
+                selectforeground="#ffffff", highlightbackground=palette["border"],
+            )
+
+    def clear_log(self):
+        self.log_box.configure(state="normal")
+        self.log_box.delete("1.0", tk.END)
+        self.log_box.configure(state="disabled")
+
+    def copy_log(self):
+        content = self.log_box.get("1.0", tk.END).rstrip()
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.status.set("Dziennik skopiowany do schowka")
+
+    def request_cancel(self):
+        if not self.worker_running or self.cancel_event.is_set():
+            return
+        self.cancel_event.set()
+        self.cancel_button.configure(state="disabled")
+        self.status.set("Anulowanie po bieżącym kroku…")
+        self.log("Zażądano anulowania — kończę bezpiecznie po bieżącym kroku.")
+
+    def raise_if_cancelled(self, context="operację"):
+        if self.cancel_event.is_set():
+            raise OperationCancelled(f"Anulowano {context}.")
 
     def _refresh_hosts(self):
         self.host_list.delete(0, tk.END)
         for host in self.hosts:
             self.host_list.insert(tk.END, self.host_label(host))
         self.select_all()
+        self.update_selection_counts()
         if hasattr(self, "container_tree"):
             self.container_tree.delete(*self.container_tree.get_children())
             self.container_records.clear()
             self.loaded_containers.clear()
             self.loaded_hosts.clear()
             self.container_count.set("Załadowane kontenery: 0")
+            self.update_selection_counts()
 
     def _persist(self):
         self.settings["hosts"] = self.hosts
@@ -480,12 +730,16 @@ class ProxmoxManager(tk.Tk):
         self.settings["remote_key_name"] = self.remote_key_name.get().strip()
         self.settings.pop("proxmox_user", None)
         self.settings["lxc_user"] = self.lxc_user.get().strip()
-        self.settings["lxc_ip_prefixes"] = self.validated_ip_prefixes()
         self.settings.pop("lxc_ip_prefix", None)
+        self.settings.pop("lxc_ip_prefixes", None)
+        self.settings["lxc_ip_overrides"] = sorted(
+            self.lxc_ip_overrides.values(), key=lambda item: (item["host"], int(item["ct"]))
+        )
         self.settings["remote_key_directory"] = self.remote_key_directory.get().strip()
         self.settings["connect_timeout_seconds"] = self.connect_timeout.get().strip()
         self.settings["output_directory"] = self.output_directory.get().strip()
         self.settings["dry_run"] = self.dry_run.get()
+        self.settings["dark_mode"] = self.dark_mode.get()
         save_settings(self.settings)
 
     def on_close(self):
@@ -530,9 +784,11 @@ class ProxmoxManager(tk.Tk):
 
     def select_all(self):
         self.host_list.selection_set(0, tk.END)
+        self.update_selection_counts()
 
     def select_all_containers(self):
         self.container_tree.selection_set(self.container_tree.get_children())
+        self.update_selection_counts()
 
     def apply_container_filter(self):
         phrase = self.container_search.get().strip().lower()
@@ -608,6 +864,69 @@ class ProxmoxManager(tk.Tk):
     def selected_containers(self):
         return [self.container_records[item] for item in self.container_tree.selection()]
 
+    @staticmethod
+    def container_override_key(record):
+        return f"{record['host']}|{record['ct']}"
+
+    def edit_container_ip_from_event(self, event):
+        if self.container_tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.container_tree.identify_column(event.x) != "#5":
+            return
+        item = self.container_tree.identify_row(event.y)
+        if item:
+            self.container_tree.selection_set(item)
+            self.edit_selected_container_ip()
+
+    def edit_selected_container_ip(self):
+        if self.worker_running:
+            return
+        containers = self.selected_containers()
+        if len(containers) != 1:
+            messagebox.showwarning(APP_TITLE, "Zaznacz dokładnie jeden LXC do edycji adresu IP.", parent=self)
+            return
+        record = containers[0]
+        key = self.container_override_key(record)
+        current_override = self.lxc_ip_overrides.get(key, {}).get("ip", "")
+        value = simpledialog.askstring(
+            "Ręczny adres IP LXC",
+            f"LXC {record['ct']} ({record['name']})\n"
+            f"Adres wykryty automatycznie: {record.get('detected_ip') or 'brak'}\n\n"
+            "Podaj ręczny IPv4 albo pozostaw pole puste, aby używać automatycznego wykrywania:",
+            initialvalue=current_override,
+            parent=self,
+        )
+        if value is None:
+            return
+        value = value.strip()
+        if value:
+            try:
+                address = ipaddress.ip_address(value)
+            except ValueError:
+                messagebox.showerror(APP_TITLE, "Podany adres IP jest nieprawidłowy.", parent=self)
+                return
+            if address.version != 4:
+                messagebox.showerror(APP_TITLE, "Nadpisany adres musi być adresem IPv4.", parent=self)
+                return
+            value = str(address)
+            self.lxc_ip_overrides[key] = {
+                "host": record["host"], "ct": record["ct"], "name": record["name"], "ip": value,
+            }
+            record["ip"] = value
+            record["ip_source"] = "override"
+            self.log(f"[{record['host']}] LXC {record['ct']}: zapisano ręczny adres IP {value}.")
+        else:
+            self.lxc_ip_overrides.pop(key, None)
+            record["ip"] = record.get("detected_ip", "")
+            record["ip_source"] = record.get("detected_ip_source", "none")
+            self.log(f"[{record['host']}] LXC {record['ct']}: przywrócono automatyczne wykrywanie IP.")
+        record["ssh"] = "nie sprawdzono" if record["status"] == "running" and record["ip"] else "—"
+        self.settings["lxc_ip_overrides"] = sorted(
+            self.lxc_ip_overrides.values(), key=lambda item: (item["host"], int(item["ct"]))
+        )
+        save_settings(self.settings)
+        self.apply_container_filter()
+
     def confirm_archive_stale_shortcuts(self):
         if self.worker_running:
             return
@@ -658,12 +977,14 @@ class ProxmoxManager(tk.Tk):
             )
             return
         self._persist()
+        self.cancel_event.clear()
         self.worker_running = True
         self.status.set("Praca w toku…")
         self.progress_bar.configure(value=0, maximum=1)
         self.progress_text.set("")
         for button in self.action_buttons:
             button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
 
         def worker():
             try:
@@ -671,6 +992,8 @@ class ProxmoxManager(tk.Tk):
                     operation(hosts, containers)
                 else:
                     operation(hosts)
+            except OperationCancelled as error:
+                self.log(str(error))
             except Exception as error:
                 self.log(f"BŁĄD: {error}")
             finally:
@@ -695,6 +1018,7 @@ class ProxmoxManager(tk.Tk):
                     self.status.set("Gotowy")
                     for button in self.action_buttons:
                         button.configure(state="normal")
+                    self.cancel_button.configure(state="disabled")
                 elif kind == "containers":
                     self.show_container_records(value)
                 elif kind == "refresh_containers":
@@ -710,18 +1034,17 @@ class ProxmoxManager(tk.Tk):
         self.after(100, self._drain_log_queue)
 
     def load_containers(self, hosts):
+        self.raise_if_cancelled("ładowanie kontenerów")
         timeout = self.validated_timeout()
-        ip_prefixes = self.validated_ip_prefixes()
-        ip_patterns = "|".join(f"{prefix}*" for prefix in ip_prefixes)
-        discover_script = (
-            DISCOVER_SCRIPT
-            .replace("__LXC_IP_PATTERNS__", ip_patterns)
-            .replace("__PCT_DISCOVERY_TIMEOUT__", str(PCT_DISCOVERY_TIMEOUT_SECONDS))
-        )
         records = []
 
         for host_index, host_profile in enumerate(hosts, start=1):
+            self.raise_if_cancelled("ładowanie kontenerów")
             host = self.host_address(host_profile)
+            discover_script = (
+                DISCOVER_SCRIPT
+                .replace("__PCT_DISCOVERY_TIMEOUT__", str(PCT_DISCOVERY_TIMEOUT_SECONDS))
+            )
             self.set_progress(host_index - 1, len(hosts), f"{host_index - 1}/{len(hosts)}")
             self.log(f"[{host}] Ładowanie listy kontenerów…")
             result = run_ssh_script(
@@ -735,30 +1058,50 @@ class ProxmoxManager(tk.Tk):
                 raise RuntimeError(f"Odczyt LXC z {host} zakończył się kodem {result.returncode}.")
 
             for row in output.splitlines():
-                match = re.fullmatch(r"(\d+)\|([^|]+)\|([^|]+)\|(\d+\.\d+\.\d+\.\d+)?", row.strip())
+                match = re.fullmatch(
+                    r"(\d+)\|([^|]+)\|([^|]+)\|(\d+\.\d+\.\d+\.\d+)?\|(default|proxmox|fallback|none)",
+                    row.strip(),
+                )
                 if not match:
                     if row.strip():
                         self.log(f"[{host}] Pominięto nieznaną odpowiedź: {row}")
                     continue
-                ct_id, name, status, ip = match.groups()
+                ct_id, name, status, ip, ip_source = match.groups()
+                override_key = f"{host}|{ct_id}"
+                override = self.lxc_ip_overrides.get(override_key)
+                detected_ip = ip or ""
+                selected_ip = override["ip"] if override else detected_ip
+                selected_source = "override" if override else ip_source
+                if override and override.get("name") != name:
+                    override["name"] = name
                 record = {
                     "host": host,
                     "host_display": host_profile.get("name", host),
                     "ct": ct_id,
                     "name": name,
                     "status": status,
-                    "ip": ip or "",
-                    "ssh": "nie sprawdzono" if status == "running" and ip else "—",
+                    "ip": selected_ip,
+                    "ip_source": selected_source,
+                    "detected_ip": detected_ip,
+                    "detected_ip_source": ip_source,
+                    "ssh": "nie sprawdzono" if status == "running" and selected_ip else "—",
                 }
                 record["bat"] = self.shortcut_path_for(record).is_file()
                 records.append(record)
             self.set_progress(host_index, len(hosts), f"{host_index}/{len(hosts)}")
 
+        fallbacks = [record for record in records if record.get("detected_ip_source") == "fallback"]
+        overrides = [record for record in records if record.get("ip_source") == "override"]
+        if fallbacks:
+            self.log(f"Dla {len(fallbacks)} LXC użyto awaryjnego wykrywania pierwszego IPv4.")
+        if overrides:
+            self.log(f"Zastosowano zapisane ręczne adresy IP dla {len(overrides)} LXC.")
         self.log(f"Załadowano {len(records)} kontenerów. Zaznacz te, które chcesz obsłużyć.")
         self.loaded_hosts = {self.host_address(host) for host in hosts}
         self.log_queue.put(("containers", records))
 
     def test_hosts(self, hosts):
+        self.raise_if_cancelled("testowanie hostów")
         timeout = self.validated_timeout()
         script = (
             "node_name=$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)\n"
@@ -769,6 +1112,7 @@ class ProxmoxManager(tk.Tk):
         failures = 0
         names_changed = False
         for index, host_profile in enumerate(hosts, start=1):
+            self.raise_if_cancelled("testowanie hostów")
             host = self.host_address(host_profile)
             self.set_progress(index - 1, len(hosts), f"{index - 1}/{len(hosts)}")
             self.log(f"[{host}] Test SSH i pct…")
@@ -803,6 +1147,7 @@ class ProxmoxManager(tk.Tk):
         self._check_container_ssh(containers, accept_new=True)
 
     def _check_container_ssh(self, containers, accept_new=False):
+        self.raise_if_cancelled("sprawdzanie SSH w LXC")
         lxc_user = self.validated_user("lxc_user")
         timeout = self.validated_timeout()
         candidates = [record for record in containers if record["status"] == "running" and record["ip"]]
@@ -822,6 +1167,10 @@ class ProxmoxManager(tk.Tk):
                 for record in candidates
             }
             for future in as_completed(futures):
+                if self.cancel_event.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                    self.raise_if_cancelled("sprawdzanie SSH w LXC")
                 record = futures[future]
                 try:
                     ssh_status, output = future.result()
@@ -872,6 +1221,7 @@ class ProxmoxManager(tk.Tk):
         )
 
     def archive_stale_shortcuts(self, hosts):
+        self.raise_if_cancelled("archiwizację skrótów")
         stale = self.find_stale_shortcuts(hosts)
         if not stale:
             self.log("Nie znaleziono nieaktualnych skrótów BAT.")
@@ -879,11 +1229,13 @@ class ProxmoxManager(tk.Tk):
         archive_dir = self.configured_output_directory() / "_archive" / datetime.now().strftime("%Y%m%d-%H%M%S")
         if self.dry_run.get():
             for source in stale:
+                self.raise_if_cancelled("podgląd archiwizacji skrótów")
                 self.log(f"PODGLĄD: zostałby zarchiwizowany {source.name} -> {archive_dir}")
             self.log(f"PODGLĄD: zaplanowano archiwizację {len(stale)} nieaktualnych skrótów.")
             return
         archive_dir.mkdir(parents=True, exist_ok=True)
         for index, source in enumerate(stale, start=1):
+            self.raise_if_cancelled("archiwizację skrótów")
             self.set_progress(index - 1, len(stale), f"{index - 1}/{len(stale)}")
             destination = archive_dir / source.name
             suffix = 1
@@ -901,6 +1253,7 @@ class ProxmoxManager(tk.Tk):
     def show_container_records(self, records):
         self.loaded_containers = records
         self.apply_container_filter()
+        self.notebook.select(self.containers_tab)
 
     def _render_container_records(self, records):
         self.container_tree.delete(*self.container_tree.get_children())
@@ -919,11 +1272,13 @@ class ProxmoxManager(tk.Tk):
         children = self.container_tree.get_children()
         if children:
             self.container_tree.see(children[0])
+        self.update_selection_counts()
 
     def set_progress(self, current, total, label=""):
         self.log_queue.put(("progress", (current, total, label)))
 
     def upload_keys(self, hosts):
+        self.raise_if_cancelled("wysyłanie klucza")
         key = Path(os.path.expandvars(os.path.expanduser(self.key_path.get().strip())))
         remote_key_path = self.validated_remote_key_path()
         timeout = self.validated_timeout()
@@ -933,27 +1288,39 @@ class ProxmoxManager(tk.Tk):
             if not key.read_bytes().strip():
                 raise ValueError(f"Plik klucza jest pusty: {key}")
 
-        self.log("Wysyłanie klucza publicznego. SCP może otworzyć okno do wpisania hasła.")
-        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        self.log("Wysyłanie klucza publicznego. Okno konsoli pojawi się tylko wtedy, gdy SCP wymaga interakcji.")
+        interactive_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         for host_profile in hosts:
+            self.raise_if_cancelled("wysyłanie klucza")
             host = self.host_address(host_profile)
             self.log(f"[{host}] Wysyłanie {key.name} -> {remote_key_path}")
             if self.dry_run.get():
                 self.log(f"[{host}] PODGLĄD: pominięto wysyłanie klucza.")
                 continue
+            base_command = [
+                "scp.exe", "-P", str(host_profile["port"]), "-o", f"ConnectTimeout={timeout}",
+                str(key), f"{host_profile['user']}@{host}:{remote_key_path}",
+            ]
             result = subprocess.run(
-                [
-                    "scp.exe", "-P", str(host_profile["port"]), "-o", f"ConnectTimeout={timeout}",
-                    str(key), f"{host_profile['user']}@{host}:{remote_key_path}",
-                ],
-                creationflags=flags,
+                [*base_command[:5], "-o", "BatchMode=yes", *base_command[5:]],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                creationflags=HIDDEN_PROCESS_FLAGS,
                 check=False,
             )
+            if result.returncode:
+                self.log(f"[{host}] SCP wymaga interakcji — otwieram konsolę do wpisania hasła lub potwierdzenia klucza.")
+                result = subprocess.run(
+                    base_command,
+                    creationflags=interactive_flags,
+                    check=False,
+                )
             if result.returncode:
                 raise RuntimeError(f"SCP do {host} zakończył się kodem {result.returncode}.")
             self.log(f"[{host}] Klucz wysłany poprawnie.")
 
     def generate_ssh_key(self, _hosts=None):
+        self.raise_if_cancelled("generowanie klucza")
         public_key = Path(os.path.expandvars(os.path.expanduser(self.key_path.get().strip())))
         if public_key.suffix.lower() != ".pub":
             raise ValueError("Ścieżka klucza publicznego powinna kończyć się rozszerzeniem .pub.")
@@ -986,6 +1353,7 @@ class ProxmoxManager(tk.Tk):
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            creationflags=HIDDEN_PROCESS_FLAGS,
             check=False,
         )
         output = result.stdout.decode("utf-8", errors="replace").strip()
@@ -998,6 +1366,7 @@ class ProxmoxManager(tk.Tk):
         self.log(f"Utworzono klucz publiczny: {public_key}")
 
     def configure_lxc(self, _hosts, containers):
+        self.raise_if_cancelled("konfigurację SSH w LXC")
         remote_key_path = self.validated_remote_key_path()
         timeout = self.validated_timeout()
         profiles = {self.host_address(host): host for host in _hosts}
@@ -1006,6 +1375,7 @@ class ProxmoxManager(tk.Tk):
             grouped.setdefault(container["host"], []).append(container)
 
         for host_index, (host, host_containers) in enumerate(grouped.items(), start=1):
+            self.raise_if_cancelled("konfigurację SSH w LXC")
             host_profile = profiles[host]
             self.set_progress(host_index - 1, len(grouped), f"{host_index - 1}/{len(grouped)}")
             ct_ids = " ".join(container["ct"] for container in host_containers)
@@ -1037,12 +1407,14 @@ class ProxmoxManager(tk.Tk):
         self.log("Konfiguracja SSH zakończona.")
 
     def generate_shortcuts(self, _hosts, containers):
+        self.raise_if_cancelled("generowanie skrótów")
         created = 0
         lxc_user = self.validated_user("lxc_user")
         output_dir = self.configured_output_directory()
         if not self.dry_run.get():
             output_dir.mkdir(parents=True, exist_ok=True)
         for index, container in enumerate(containers, start=1):
+            self.raise_if_cancelled("generowanie skrótów")
             self.set_progress(index - 1, len(containers), f"{index - 1}/{len(containers)}")
             host = container["host"]
             ct_id = container["ct"]
@@ -1073,13 +1445,14 @@ class ProxmoxManager(tk.Tk):
         action = "zaplanowano" if self.dry_run.get() else "utworzono"
         self.log(f"Gotowe: {action} {created} skrótów w {output_dir}")
 
-    def run_all(self, hosts, containers):
+    def run_selected_lxc(self, hosts, containers):
         selected_addresses = {container["host"] for container in containers}
         target_hosts = [host for host in hosts if self.host_address(host) in selected_addresses]
-        self.generate_ssh_key()
-        self.upload_keys(target_hosts)
+        self.raise_if_cancelled("operację dla LXC")
         self.configure_lxc(target_hosts, containers)
+        self.raise_if_cancelled("operację dla LXC")
         self.check_container_ssh(target_hosts, containers)
+        self.raise_if_cancelled("operację dla LXC")
         self.generate_shortcuts(target_hosts, containers)
 
     def validated_remote_key_name(self):
@@ -1108,22 +1481,6 @@ class ProxmoxManager(tk.Tk):
         if not 1 <= timeout <= 300:
             raise ValueError("connect_timeout_seconds musi mieścić się w zakresie 1-300.")
         return timeout
-
-    def validated_ip_prefixes(self):
-        raw = self.lxc_ip_prefixes.get() if hasattr(self, "lxc_ip_prefixes") else self.settings["lxc_ip_prefixes"]
-        values = raw if isinstance(raw, list) else re.split(r"[,;\s]+", str(raw).strip())
-        prefixes = []
-        for value in values:
-            prefix = str(value).strip()
-            if not prefix:
-                continue
-            if not re.fullmatch(r"[0-9.]+", prefix):
-                raise ValueError("Prefiksy LXC mogą zawierać tylko cyfry i kropki.")
-            if prefix not in prefixes:
-                prefixes.append(prefix)
-        if not prefixes:
-            raise ValueError("Podaj co najmniej jeden prefiks adresów LXC.")
-        return prefixes
 
     def configured_output_directory(self):
         configured = Path(os.path.expandvars(os.path.expanduser(str(self.settings["output_directory"]))))
