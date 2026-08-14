@@ -1,13 +1,13 @@
 # Proxmox LXC SSH Manager
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/releases)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Graficzne narzędzie dla Windows do zarządzania dostępem SSH do kontenerów LXC na hostach Proxmox.
 
-Aktualna wersja: **0.2.0**
+Aktualna wersja: **0.3.0**
 
 ## Funkcje
 
@@ -20,6 +20,8 @@ Aktualna wersja: **0.2.0**
 - jawne dodawanie nowych fingerprintów LXC do lokalnego `known_hosts`;
 - filtrowanie kontenerów według nazwy, stanu SSH, zaufania fingerprintu, autoryzacji i obecności skrótu BAT;
 - pasek postępu dla dłuższych operacji;
+- wybór adresów LXC z wielu konfigurowalnych prefiksów sieciowych;
+- wykrywanie nieaktualnych skrótów BAT i przenoszenie ich do odzyskiwalnego archiwum;
 - instalowanie oraz uruchamianie serwera SSH w wybranych LXC;
 - dodawanie klucza do `authorized_keys` bez duplikatów;
 - generowanie skrótów BAT otwierających sesje SSH;
@@ -58,5 +60,6 @@ Przycisk `Zaufaj nowym kluczom` używa polityki OpenSSH `accept-new`: zapisuje
 nowe fingerprinty, ale odrzuca klucze znanych hostów, które uległy zmianie.
 
 Wygenerowane skróty trafiają domyślnie do katalogu `shortcuts`.
+Nieaktualne skróty można przenieść do datowanego podfolderu `shortcuts/_archive`.
 
 Historia zmian znajduje się w [docs/CHANGELOG.md](docs/CHANGELOG.md), a plan rozwoju w [docs/ROADMAP.md](docs/ROADMAP.md).

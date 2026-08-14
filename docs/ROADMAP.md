@@ -2,8 +2,6 @@
 
 ## Najbliższe usprawnienia
 
-- wykrywanie nieaktualnych skrótów BAT i bezpieczne proponowanie ich usunięcia;
-- obsługa wielu prefiksów lub podsieci LXC;
 - oddzielny użytkownik i port SSH dla każdego hosta;
 - tryb podglądu bez wprowadzania zmian;
 - obsługa instalacji SSH w systemach używających `apk` i `dnf`;
