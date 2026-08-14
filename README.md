@@ -64,6 +64,9 @@ Plik jest pomijany przez Git, ponieważ może zawierać adresy i ścieżki użyt
 4. Załaduj kontenery i zaznacz wybrane LXC.
 5. Skonfiguruj SSH i wygeneruj skróty BAT.
 
+Przycisk `Wykonaj dla zaznaczonych LXC` realizuje tylko krok 5 dla wybranych
+kontenerów. Nie generuje klucza i nie wysyła go ponownie na hosty Proxmox.
+
 Wyniki diagnostyki są bieżącym stanem sesji i nie są zapisywane w configu.
 Przycisk `Zaufaj nowym kluczom` używa polityki OpenSSH `accept-new`: zapisuje
 nowe fingerprinty, ale odrzuca klucze znanych hostów, które uległy zmianie.

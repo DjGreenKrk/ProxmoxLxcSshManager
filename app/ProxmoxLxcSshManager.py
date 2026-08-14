@@ -527,12 +527,12 @@ class ProxmoxManager(tk.Tk):
             text="4. Archiwizuj stare BAT",
             command=self.confirm_archive_stale_shortcuts,
         )
-        run_all_button = ttk.Button(
+        run_lxc_button = ttk.Button(
             container_actions,
-            text="▶ Wykonaj wszystko",
-            command=lambda: self.start_task(self.run_all, require_containers=True),
+            text="▶ Wykonaj dla zaznaczonych LXC",
+            command=lambda: self.start_task(self.run_selected_lxc, require_containers=True),
         )
-        for column, button in enumerate((configure_button, shortcuts_button, archive_button, run_all_button)):
+        for column, button in enumerate((configure_button, shortcuts_button, archive_button, run_lxc_button)):
             button.grid(row=0, column=column, sticky="ew", padx=3)
         ttk.Checkbutton(
             container_actions,
@@ -542,7 +542,7 @@ class ProxmoxManager(tk.Tk):
 
         self.action_buttons = [
             generate_key_button, upload_key_button, configure_button,
-            shortcuts_button, archive_button, run_all_button,
+            shortcuts_button, archive_button, run_lxc_button,
         ]
 
         log_frame = ttk.LabelFrame(main, text="Dziennik", padding=8, style="Section.TLabelframe")
@@ -1201,11 +1201,9 @@ class ProxmoxManager(tk.Tk):
         action = "zaplanowano" if self.dry_run.get() else "utworzono"
         self.log(f"Gotowe: {action} {created} skrótów w {output_dir}")
 
-    def run_all(self, hosts, containers):
+    def run_selected_lxc(self, hosts, containers):
         selected_addresses = {container["host"] for container in containers}
         target_hosts = [host for host in hosts if self.host_address(host) in selected_addresses]
-        self.generate_ssh_key()
-        self.upload_keys(target_hosts)
         self.configure_lxc(target_hosts, containers)
         self.check_container_ssh(target_hosts, containers)
         self.generate_shortcuts(target_hosts, containers)

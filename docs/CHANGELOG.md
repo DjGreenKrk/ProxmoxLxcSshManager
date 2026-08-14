@@ -16,6 +16,7 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 - interfejs podzielono na zakładki hostów i kontenerów, dzięki czemu tabela LXC ma więcej przestrzeni;
 - dodano nagłówek z logo, większe domyślne i minimalne okno oraz liczniki zaznaczeń;
 - operacje rozdzielono kontekstowo: klucze SSH są dostępne przy hostach, a konfiguracja i skróty wyłącznie przy kontenerach;
+- akcja zbiorcza w zakładce kontenerów nie generuje ani nie wysyła klucza na hosty; obejmuje wyłącznie konfigurację, test SSH i skróty dla zaznaczonych LXC;
 - nagłówki wszystkich sekcji są spójnie wyróżnione;
 - dziennik można teraz skopiować do schowka lub wyczyścić bez restartowania aplikacji.
 

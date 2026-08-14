@@ -181,6 +181,29 @@ class ContainerDiagnosticsTests(unittest.TestCase):
         self.assertTrue(any("ponawiam sekwencyjnie" in message for message in messages))
 
 
+class ContextualWorkflowTests(unittest.TestCase):
+    def test_selected_lxc_workflow_does_not_generate_or_upload_keys(self):
+        calls = []
+        fake = SimpleNamespace(
+            host_address=lambda host: host["address"],
+            configure_lxc=lambda hosts, containers: calls.append(("configure", hosts, containers)),
+            check_container_ssh=lambda hosts, containers: calls.append(("check", hosts, containers)),
+            generate_shortcuts=lambda hosts, containers: calls.append(("shortcuts", hosts, containers)),
+            generate_ssh_key=lambda: calls.append(("generate_key",)),
+            upload_keys=lambda hosts: calls.append(("upload", hosts)),
+        )
+        hosts = [
+            {"address": "pve-one.example.test"},
+            {"address": "pve-two.example.test"},
+        ]
+        containers = [{"host": "pve-two.example.test", "ct": "155"}]
+
+        manager.ProxmoxManager.run_selected_lxc(fake, hosts, containers)
+
+        self.assertEqual([call[0] for call in calls], ["configure", "check", "shortcuts"])
+        self.assertEqual(calls[0][1], [hosts[1]])
+
+
 class FormattingTests(unittest.TestCase):
     def test_host_label_includes_discovered_name(self):
         profile = {"address": "192.168.1.100", "user": "root", "port": 22, "name": "pve-one"}
