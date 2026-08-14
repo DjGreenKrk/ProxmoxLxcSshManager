@@ -82,6 +82,7 @@ class SshCommandTests(unittest.TestCase):
         self.assertIn("ConnectTimeout=9", command)
         self.assertEqual(run.call_args.kwargs["input"], b"true\n")
         self.assertEqual(run.call_args.kwargs["timeout"], 360)
+        self.assertEqual(run.call_args.kwargs["creationflags"], manager.HIDDEN_PROCESS_FLAGS)
 
     def test_run_ssh_script_reports_command_timeout(self):
         with patch.object(
@@ -149,6 +150,30 @@ class DryRunTests(unittest.TestCase):
 
         run.assert_not_called()
         self.assertTrue(any("PODGLĄD" in message for message in messages))
+
+    def test_upload_uses_hidden_scp_when_key_authentication_works(self):
+        messages = []
+        completed = SimpleNamespace(returncode=0, stdout=b"")
+        with tempfile.TemporaryDirectory() as directory:
+            key = Path(directory) / "access.pub"
+            key.write_text("ssh-ed25519 AAAA test", encoding="utf-8")
+            fake = SimpleNamespace(
+                key_path=SimpleNamespace(get=lambda: str(key)),
+                dry_run=SimpleNamespace(get=lambda: False),
+                validated_remote_key_path=lambda: "/root/access.pub",
+                validated_timeout=lambda: 8,
+                host_address=lambda host: host["address"],
+                log=messages.append,
+            )
+            hosts = [{"address": "192.0.2.10", "user": "root", "port": 22}]
+
+            with patch.object(manager.subprocess, "run", return_value=completed) as run:
+                manager.ProxmoxManager.upload_keys(fake, hosts)
+
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        self.assertIn("BatchMode=yes", command)
+        self.assertEqual(run.call_args.kwargs["creationflags"], manager.HIDDEN_PROCESS_FLAGS)
 
 
 class ContainerDiagnosticsTests(unittest.TestCase):

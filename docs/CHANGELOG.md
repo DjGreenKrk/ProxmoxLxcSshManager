@@ -19,6 +19,7 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 - akcja zbiorcza w zakładce kontenerów nie generuje ani nie wysyła klucza na hosty; obejmuje wyłącznie konfigurację, test SSH i skróty dla zaznaczonych LXC;
 - nagłówki wszystkich sekcji są spójnie wyróżnione;
 - dziennik można teraz skopiować do schowka lub wyczyścić bez restartowania aplikacji.
+- wersja EXE nie otwiera pomocniczych okien konsoli dla nieinteraktywnych poleceń SSH i `ssh-keygen`; konsola pozostaje widoczna wyłącznie wtedy, gdy SCP może wymagać wpisania hasła.
 
 ## 0.5.0 — 2026-08-14
 

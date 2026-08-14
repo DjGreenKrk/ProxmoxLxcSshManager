@@ -29,6 +29,7 @@ DEFAULT_PUBLIC_KEY = Path.home() / ".ssh" / "id_ed25519.pub"
 DEFAULT_REMOTE_KEY_NAME = "proxmox_lxc_access.pub"
 PCT_DISCOVERY_TIMEOUT_SECONDS = 15
 PCT_CONFIGURATION_TIMEOUT_SECONDS = 300
+HIDDEN_PROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 DEFAULT_SETTINGS = {
     "hosts": DEFAULT_HOSTS,
     "public_key": str(DEFAULT_PUBLIC_KEY),
@@ -196,6 +197,7 @@ def run_ssh_script(host, script, user="root", port=22, timeout=8, command_timeou
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=command_timeout,
+            creationflags=HIDDEN_PROCESS_FLAGS,
             check=False,
         )
     except subprocess.TimeoutExpired as error:
@@ -217,6 +219,7 @@ def check_ssh_access(host, user="root", timeout=8, accept_new=False):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout + 5,
+            creationflags=HIDDEN_PROCESS_FLAGS,
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -1061,22 +1064,32 @@ class ProxmoxManager(tk.Tk):
             if not key.read_bytes().strip():
                 raise ValueError(f"Plik klucza jest pusty: {key}")
 
-        self.log("Wysyłanie klucza publicznego. SCP może otworzyć okno do wpisania hasła.")
-        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        self.log("Wysyłanie klucza publicznego. Okno konsoli pojawi się tylko wtedy, gdy SCP wymaga interakcji.")
+        interactive_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         for host_profile in hosts:
             host = self.host_address(host_profile)
             self.log(f"[{host}] Wysyłanie {key.name} -> {remote_key_path}")
             if self.dry_run.get():
                 self.log(f"[{host}] PODGLĄD: pominięto wysyłanie klucza.")
                 continue
+            base_command = [
+                "scp.exe", "-P", str(host_profile["port"]), "-o", f"ConnectTimeout={timeout}",
+                str(key), f"{host_profile['user']}@{host}:{remote_key_path}",
+            ]
             result = subprocess.run(
-                [
-                    "scp.exe", "-P", str(host_profile["port"]), "-o", f"ConnectTimeout={timeout}",
-                    str(key), f"{host_profile['user']}@{host}:{remote_key_path}",
-                ],
-                creationflags=flags,
+                [*base_command[:5], "-o", "BatchMode=yes", *base_command[5:]],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                creationflags=HIDDEN_PROCESS_FLAGS,
                 check=False,
             )
+            if result.returncode:
+                self.log(f"[{host}] SCP wymaga interakcji — otwieram konsolę do wpisania hasła lub potwierdzenia klucza.")
+                result = subprocess.run(
+                    base_command,
+                    creationflags=interactive_flags,
+                    check=False,
+                )
             if result.returncode:
                 raise RuntimeError(f"SCP do {host} zakończył się kodem {result.returncode}.")
             self.log(f"[{host}] Klucz wysłany poprawnie.")
@@ -1114,6 +1127,7 @@ class ProxmoxManager(tk.Tk):
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            creationflags=HIDDEN_PROCESS_FLAGS,
             check=False,
         )
         output = result.stdout.decode("utf-8", errors="replace").strip()
