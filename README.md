@@ -62,4 +62,8 @@ nowe fingerprinty, ale odrzuca klucze znanych hostów, które uległy zmianie.
 Wygenerowane skróty trafiają domyślnie do katalogu `shortcuts`.
 Nieaktualne skróty można przenieść do datowanego podfolderu `shortcuts/_archive`.
 
+Prefiksy IP służą do wyboru właściwego adresu z `hostname -I` wewnątrz kontenera.
+Nie muszą należeć do tej samej sieci co host Proxmox. Kilka wartości można podać
+po przecinku, średniku lub spacji, np. `192.168.0., 10.20.0., 172.16.5.`.
+
 Historia zmian znajduje się w [docs/CHANGELOG.md](docs/CHANGELOG.md), a plan rozwoju w [docs/ROADMAP.md](docs/ROADMAP.md).

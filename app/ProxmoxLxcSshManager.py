@@ -255,17 +255,23 @@ class ProxmoxManager(tk.Tk):
         ttk.Label(settings_frame, text="Użytkownik LXC:").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(settings_frame, textvariable=self.lxc_user).grid(row=0, column=3, sticky="ew", pady=2)
 
-        ttk.Label(settings_frame, text="Prefiksy adresów LXC:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(settings_frame, text="Prefiksy IP kontenerów:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(settings_frame, textvariable=self.lxc_ip_prefixes).grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=2)
         ttk.Label(settings_frame, text="Timeout SSH [s]:").grid(row=1, column=2, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(settings_frame, textvariable=self.connect_timeout).grid(row=1, column=3, sticky="ew", pady=2)
 
-        ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.remote_key_directory).grid(row=2, column=1, columnspan=3, sticky="ew", pady=2)
+        ttk.Label(
+            settings_frame,
+            text="Oddziel przecinkami, średnikami lub spacjami, np. 192.168.0., 10.20.0. — nie muszą być zgodne z siecią hosta Proxmox.",
+            foreground="#555555",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 4))
 
-        ttk.Label(settings_frame, text="Katalog skrótów BAT:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.output_directory).grid(row=3, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=2)
-        ttk.Button(settings_frame, text="Wybierz katalog…", command=self.choose_output_directory).grid(row=3, column=3, sticky="ew", pady=2)
+        ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.remote_key_directory).grid(row=3, column=1, columnspan=3, sticky="ew", pady=2)
+
+        ttk.Label(settings_frame, text="Katalog skrótów BAT:").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.output_directory).grid(row=4, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=2)
+        ttk.Button(settings_frame, text="Wybierz katalog…", command=self.choose_output_directory).grid(row=4, column=3, sticky="ew", pady=2)
 
         containers_frame = ttk.LabelFrame(main, text="Kontenery — zaznacz LXC do obsługi", padding=8)
         containers_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
