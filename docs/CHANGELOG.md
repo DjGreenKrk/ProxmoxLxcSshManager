@@ -2,6 +2,24 @@
 
 Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
+## 0.4.0 — 2026-08-14
+
+### Dodano
+
+- osobny profil połączenia dla każdego hosta Proxmox;
+- konfigurowalne per host: adres IP lub DNS, użytkownik SSH i port;
+- dialog dodawania oraz edycji hosta w GUI;
+- czytelny format wpisów hostów `użytkownik@adres:port`;
+- automatyczne pobieranie, zapisywanie i wyświetlanie zdalnej nazwy hosta po udanym teście;
+- trwały zestaw testów jednostkowych dla migracji configu, profili i komend SSH;
+- workflow GitHub Actions dla Pythona 3.10 i 3.12.
+
+### Zmieniono
+
+- SSH, SCP, diagnostyka i odczyt LXC używają ustawień właściwego hosta;
+- stary config z listą adresów i globalnym użytkownikiem jest automatycznie migrowany;
+- kolumna hosta na liście LXC pokazuje wykrytą nazwę zamiast technicznego adresu, jeśli nazwa jest dostępna.
+
 ## 0.3.0 — 2026-08-14
 
 ### Dodano

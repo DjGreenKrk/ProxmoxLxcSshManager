@@ -12,18 +12,20 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 APP_TITLE = f"Proxmox LXC SSH Manager v{APP_VERSION}"
 OUTPUT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = OUTPUT_DIR / "ProxmoxLxcSshManager.config.json"
-DEFAULT_HOSTS = ["192.168.1.100", "192.168.1.101"]
+DEFAULT_HOSTS = [
+    {"address": "192.168.1.100", "user": "root", "port": 22},
+    {"address": "192.168.1.101", "user": "root", "port": 22},
+]
 DEFAULT_PUBLIC_KEY = Path.home() / ".ssh" / "id_ed25519.pub"
 DEFAULT_REMOTE_KEY_NAME = "proxmox_lxc_access.pub"
 DEFAULT_SETTINGS = {
     "hosts": DEFAULT_HOSTS,
     "public_key": str(DEFAULT_PUBLIC_KEY),
     "remote_key_name": DEFAULT_REMOTE_KEY_NAME,
-    "proxmox_user": "root",
     "lxc_user": "root",
     "lxc_ip_prefixes": ["192.168.1."],
     "remote_key_directory": "/root",
@@ -132,8 +134,28 @@ def load_settings():
         merged = DEFAULT_SETTINGS.copy()
         merged.update(settings)
         hosts = merged["hosts"]
-        if not isinstance(hosts, list) or not all(isinstance(host, str) for host in hosts):
-            raise ValueError("Pole hosts musi być listą tekstową.")
+        legacy_user = str(settings.get("proxmox_user", "root"))
+        if not isinstance(hosts, list):
+            raise ValueError("Pole hosts musi być listą.")
+        normalized_hosts = []
+        for host in hosts:
+            profile = {"address": host, "user": legacy_user, "port": 22} if isinstance(host, str) else dict(host)
+            address = str(profile.get("address", "")).strip()
+            user = str(profile.get("user", legacy_user)).strip()
+            port = int(profile.get("port", 22))
+            name = str(profile.get("name", "")).strip()
+            if not re.fullmatch(r"[A-Za-z0-9._:-]+", address):
+                raise ValueError(f"Nieprawidłowy adres hosta: {address}")
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", user):
+                raise ValueError(f"Nieprawidłowy użytkownik hosta: {user}")
+            if not 1 <= port <= 65535:
+                raise ValueError(f"Nieprawidłowy port hosta: {port}")
+            normalized = {"address": address, "user": user, "port": port}
+            if name:
+                normalized["name"] = name
+            normalized_hosts.append(normalized)
+        merged["hosts"] = normalized_hosts
+        merged.pop("proxmox_user", None)
         return merged
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError(f"Nie można odczytać konfiguracji {CONFIG_FILE}: {error}") from error
@@ -146,9 +168,9 @@ def save_settings(settings):
     )
 
 
-def run_ssh_script(host, script, user="root", timeout=8):
+def run_ssh_script(host, script, user="root", port=22, timeout=8):
     command = [
-        "ssh.exe", "-T", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
+        "ssh.exe", "-T", "-p", str(port), "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
         f"{user}@{host}", "bash -s",
     ]
     return subprocess.run(
@@ -189,6 +211,50 @@ def safe_filename_part(value):
     return value or "unnamed"
 
 
+class HostDialog(simpledialog.Dialog):
+    def __init__(self, parent, title, initial=None):
+        self.initial = initial or {"address": "", "user": "root", "port": 22}
+        self.result = None
+        super().__init__(parent, title)
+
+    def body(self, master):
+        ttk.Label(master, text="Adres IP lub DNS:").grid(row=0, column=0, sticky="w", padx=5, pady=4)
+        ttk.Label(master, text="Użytkownik SSH:").grid(row=1, column=0, sticky="w", padx=5, pady=4)
+        ttk.Label(master, text="Port SSH:").grid(row=2, column=0, sticky="w", padx=5, pady=4)
+        self.address_entry = ttk.Entry(master, width=35)
+        self.user_entry = ttk.Entry(master, width=35)
+        self.port_entry = ttk.Entry(master, width=35)
+        self.address_entry.grid(row=0, column=1, padx=5, pady=4)
+        self.user_entry.grid(row=1, column=1, padx=5, pady=4)
+        self.port_entry.grid(row=2, column=1, padx=5, pady=4)
+        self.address_entry.insert(0, self.initial["address"])
+        self.user_entry.insert(0, self.initial["user"])
+        self.port_entry.insert(0, str(self.initial["port"]))
+        return self.address_entry
+
+    def validate(self):
+        address = self.address_entry.get().strip()
+        user = self.user_entry.get().strip()
+        try:
+            port = int(self.port_entry.get().strip())
+        except ValueError:
+            messagebox.showerror(APP_TITLE, "Port SSH musi być liczbą.", parent=self)
+            return False
+        if not re.fullmatch(r"[A-Za-z0-9._:-]+", address):
+            messagebox.showerror(APP_TITLE, "Adres hosta zawiera niedozwolone znaki.", parent=self)
+            return False
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", user):
+            messagebox.showerror(APP_TITLE, "Nieprawidłowa nazwa użytkownika SSH.", parent=self)
+            return False
+        if not 1 <= port <= 65535:
+            messagebox.showerror(APP_TITLE, "Port SSH musi mieścić się w zakresie 1-65535.", parent=self)
+            return False
+        self.result = {"address": address, "user": user, "port": port}
+        if address == self.initial.get("address") and self.initial.get("name"):
+            self.result["name"] = self.initial["name"]
+        return True
+
+
 class ProxmoxManager(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -204,7 +270,6 @@ class ProxmoxManager(tk.Tk):
         self.hosts = self.settings["hosts"]
         self.key_path = tk.StringVar(value=str(self.settings["public_key"]))
         self.remote_key_name = tk.StringVar(value=str(self.settings["remote_key_name"]))
-        self.proxmox_user = tk.StringVar(value=str(self.settings["proxmox_user"]))
         self.lxc_user = tk.StringVar(value=str(self.settings["lxc_user"]))
         self.lxc_ip_prefixes = tk.StringVar(value=", ".join(self.settings["lxc_ip_prefixes"]))
         self.remote_key_directory = tk.StringVar(value=str(self.settings["remote_key_directory"]))
@@ -233,12 +298,13 @@ class ProxmoxManager(tk.Tk):
         hosts_frame.rowconfigure(0, weight=1)
 
         self.host_list = tk.Listbox(hosts_frame, selectmode=tk.EXTENDED, height=6)
-        self.host_list.grid(row=0, column=0, rowspan=5, sticky="nsew", padx=(0, 8))
+        self.host_list.grid(row=0, column=0, rowspan=6, sticky="nsew", padx=(0, 8))
         ttk.Button(hosts_frame, text="Dodaj host", command=self.add_host).grid(row=0, column=1, sticky="ew", pady=2)
-        ttk.Button(hosts_frame, text="Usuń host", command=self.remove_hosts).grid(row=1, column=1, sticky="ew", pady=2)
-        ttk.Button(hosts_frame, text="Zaznacz wszystkie", command=self.select_all).grid(row=2, column=1, sticky="ew", pady=2)
-        ttk.Button(hosts_frame, text="Załaduj kontenery", command=lambda: self.start_task(self.load_containers)).grid(row=3, column=1, sticky="ew", pady=2)
-        ttk.Button(hosts_frame, text="Testuj hosty", command=lambda: self.start_task(self.test_hosts)).grid(row=4, column=1, sticky="ew", pady=2)
+        ttk.Button(hosts_frame, text="Edytuj host", command=self.edit_host).grid(row=1, column=1, sticky="ew", pady=2)
+        ttk.Button(hosts_frame, text="Usuń host", command=self.remove_hosts).grid(row=2, column=1, sticky="ew", pady=2)
+        ttk.Button(hosts_frame, text="Zaznacz wszystkie", command=self.select_all).grid(row=3, column=1, sticky="ew", pady=2)
+        ttk.Button(hosts_frame, text="Załaduj kontenery", command=lambda: self.start_task(self.load_containers)).grid(row=4, column=1, sticky="ew", pady=2)
+        ttk.Button(hosts_frame, text="Testuj hosty", command=lambda: self.start_task(self.test_hosts)).grid(row=5, column=1, sticky="ew", pady=2)
 
         key_frame = ttk.LabelFrame(main, text="Klucz publiczny SSH", padding=8)
         key_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -253,10 +319,10 @@ class ProxmoxManager(tk.Tk):
         settings_frame.columnconfigure(1, weight=1)
         settings_frame.columnconfigure(3, weight=1)
 
-        ttk.Label(settings_frame, text="Użytkownik Proxmox:").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.proxmox_user).grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=2)
-        ttk.Label(settings_frame, text="Użytkownik LXC:").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.lxc_user).grid(row=0, column=3, sticky="ew", pady=2)
+        ttk.Label(settings_frame, text="Użytkownik LXC:").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.lxc_user).grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=2)
+        ttk.Label(settings_frame, text="Dane Proxmox:").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(settings_frame, text="ustawiane osobno przy każdym hoście").grid(row=0, column=3, sticky="w", pady=2)
 
         ttk.Label(settings_frame, text="Prefiksy IP kontenerów:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(settings_frame, textvariable=self.lxc_ip_prefixes).grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=2)
@@ -372,7 +438,7 @@ class ProxmoxManager(tk.Tk):
     def _refresh_hosts(self):
         self.host_list.delete(0, tk.END)
         for host in self.hosts:
-            self.host_list.insert(tk.END, host)
+            self.host_list.insert(tk.END, self.host_label(host))
         self.select_all()
         if hasattr(self, "container_tree"):
             self.container_tree.delete(*self.container_tree.get_children())
@@ -385,7 +451,7 @@ class ProxmoxManager(tk.Tk):
         self.settings["hosts"] = self.hosts
         self.settings["public_key"] = self.key_path.get().strip()
         self.settings["remote_key_name"] = self.remote_key_name.get().strip()
-        self.settings["proxmox_user"] = self.proxmox_user.get().strip()
+        self.settings.pop("proxmox_user", None)
         self.settings["lxc_user"] = self.lxc_user.get().strip()
         self.settings["lxc_ip_prefixes"] = self.validated_ip_prefixes()
         self.settings.pop("lxc_ip_prefix", None)
@@ -399,17 +465,31 @@ class ProxmoxManager(tk.Tk):
         self.destroy()
 
     def add_host(self):
-        host = simpledialog.askstring("Dodaj host Proxmox", "Adres IP lub nazwa DNS hosta:", parent=self)
-        if not host:
+        profile = HostDialog(self, "Dodaj host Proxmox").result
+        if not profile:
             return
-        host = host.strip()
-        if not re.fullmatch(r"[A-Za-z0-9._:-]+", host):
-            messagebox.showerror(APP_TITLE, "Adres hosta zawiera niedozwolone znaki.", parent=self)
-            return
-        if host not in self.hosts:
-            self.hosts.append(host)
+        if not any(host["address"] == profile["address"] for host in self.hosts):
+            self.hosts.append(profile)
             self._persist()
             self._refresh_hosts()
+        else:
+            messagebox.showwarning(APP_TITLE, "Host o tym adresie już istnieje.", parent=self)
+
+    def edit_host(self):
+        indexes = list(self.host_list.curselection())
+        if len(indexes) != 1:
+            messagebox.showwarning(APP_TITLE, "Zaznacz dokładnie jeden host do edycji.", parent=self)
+            return
+        index = indexes[0]
+        profile = HostDialog(self, "Edytuj host Proxmox", self.hosts[index]).result
+        if not profile:
+            return
+        if any(position != index and host["address"] == profile["address"] for position, host in enumerate(self.hosts)):
+            messagebox.showwarning(APP_TITLE, "Host o tym adresie już istnieje.", parent=self)
+            return
+        self.hosts[index] = profile
+        self._persist()
+        self._refresh_hosts()
 
     def remove_hosts(self):
         indexes = list(self.host_list.curselection())
@@ -431,7 +511,10 @@ class ProxmoxManager(tk.Tk):
         selected_filter = self.container_filter.get()
         visible = []
         for record in self.loaded_containers:
-            searchable = " ".join(str(record.get(key, "")) for key in ("host", "ct", "name", "status", "ip", "ssh")).lower()
+            searchable = " ".join(
+                str(record.get(key, ""))
+                for key in ("host", "host_display", "ct", "name", "status", "ip", "ssh")
+            ).lower()
             if phrase and phrase not in searchable:
                 continue
             if selected_filter == "Uruchomione" and record["status"] != "running":
@@ -477,6 +560,23 @@ class ProxmoxManager(tk.Tk):
     def selected_hosts(self):
         return [self.hosts[index] for index in self.host_list.curselection()]
 
+    @staticmethod
+    def host_label(host):
+        connection = f"{host['user']}@{host['address']}:{host['port']}"
+        return f"{host['name']} — {connection}" if host.get("name") else connection
+
+    def refresh_host_labels(self):
+        selected = set(self.host_list.curselection())
+        self.host_list.delete(0, tk.END)
+        for index, host in enumerate(self.hosts):
+            self.host_list.insert(tk.END, self.host_label(host))
+            if index in selected:
+                self.host_list.selection_set(index)
+
+    @staticmethod
+    def host_address(host):
+        return host["address"]
+
     def selected_containers(self):
         return [self.container_records[item] for item in self.container_tree.selection()]
 
@@ -490,7 +590,7 @@ class ProxmoxManager(tk.Tk):
         if not self.loaded_containers:
             messagebox.showwarning(APP_TITLE, "Najpierw załaduj kontenery z wybranych hostów.", parent=self)
             return
-        missing_hosts = set(hosts) - self.loaded_hosts
+        missing_hosts = {self.host_address(host) for host in hosts} - self.loaded_hosts
         if missing_hosts:
             messagebox.showwarning(
                 APP_TITLE,
@@ -575,22 +675,24 @@ class ProxmoxManager(tk.Tk):
                     current, total, label = value
                     self.progress_bar.configure(maximum=max(total, 1), value=current)
                     self.progress_text.set(label or f"{current}/{total}")
+                elif kind == "host_labels":
+                    self.refresh_host_labels()
         except queue.Empty:
             pass
         self.after(100, self._drain_log_queue)
 
     def load_containers(self, hosts):
-        proxmox_user = self.validated_user("proxmox_user")
         timeout = self.validated_timeout()
         ip_prefixes = self.validated_ip_prefixes()
         ip_patterns = "|".join(f"{prefix}*" for prefix in ip_prefixes)
         discover_script = DISCOVER_SCRIPT.replace("__LXC_IP_PATTERNS__", ip_patterns)
         records = []
 
-        for host_index, host in enumerate(hosts, start=1):
+        for host_index, host_profile in enumerate(hosts, start=1):
+            host = self.host_address(host_profile)
             self.set_progress(host_index - 1, len(hosts), f"{host_index - 1}/{len(hosts)}")
             self.log(f"[{host}] Ładowanie listy kontenerów…")
-            result = run_ssh_script(host, discover_script, proxmox_user, timeout)
+            result = run_ssh_script(host, discover_script, host_profile["user"], host_profile["port"], timeout)
             output = result.stdout.decode("utf-8", errors="replace")
             if result.returncode:
                 if output.strip():
@@ -606,6 +708,7 @@ class ProxmoxManager(tk.Tk):
                 ct_id, name, status, ip = match.groups()
                 record = {
                     "host": host,
+                    "host_display": host_profile.get("name", host),
                     "ct": ct_id,
                     "name": name,
                     "status": status,
@@ -617,25 +720,42 @@ class ProxmoxManager(tk.Tk):
             self.set_progress(host_index, len(hosts), f"{host_index}/{len(hosts)}")
 
         self.log(f"Załadowano {len(records)} kontenerów. Zaznacz te, które chcesz obsłużyć.")
-        self.loaded_hosts = set(hosts)
+        self.loaded_hosts = {self.host_address(host) for host in hosts}
         self.log_queue.put(("containers", records))
 
     def test_hosts(self, hosts):
-        proxmox_user = self.validated_user("proxmox_user")
         timeout = self.validated_timeout()
-        script = "command -v pct >/dev/null || exit 10\npveversion 2>/dev/null || echo 'Proxmox version unavailable'\n"
+        script = (
+            "node_name=$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)\n"
+            "printf 'NODE_NAME|%s\\n' \"$node_name\"\n"
+            "command -v pct >/dev/null || exit 10\n"
+            "pveversion 2>/dev/null || echo 'Proxmox version unavailable'\n"
+        )
         failures = 0
-        for index, host in enumerate(hosts, start=1):
+        names_changed = False
+        for index, host_profile in enumerate(hosts, start=1):
+            host = self.host_address(host_profile)
             self.set_progress(index - 1, len(hosts), f"{index - 1}/{len(hosts)}")
             self.log(f"[{host}] Test SSH i pct…")
-            result = run_ssh_script(host, script, proxmox_user, timeout)
-            output = result.stdout.decode("utf-8", errors="replace").strip()
+            result = run_ssh_script(host, script, host_profile["user"], host_profile["port"], timeout)
+            output_lines = result.stdout.decode("utf-8", errors="replace").splitlines()
+            name_line = next((line for line in output_lines if line.startswith("NODE_NAME|")), "")
+            discovered_name = name_line.partition("|")[2].strip()
+            output = "\n".join(line for line in output_lines if not line.startswith("NODE_NAME|")).strip()
+            if discovered_name and host_profile.get("name") != discovered_name:
+                host_profile["name"] = discovered_name
+                names_changed = True
+                self.log(f"[{host}] Zapisano nazwę hosta: {discovered_name}")
             if result.returncode == 0:
                 self.log(f"[{host}] OK — {output or 'SSH i pct dostępne'}")
             else:
                 failures += 1
                 self.log(f"[{host}] BŁĄD ({result.returncode}) — {output or 'brak odpowiedzi'}")
             self.set_progress(index, len(hosts), f"{index}/{len(hosts)}")
+        if names_changed:
+            self.settings["hosts"] = self.hosts
+            save_settings(self.settings)
+            self.log_queue.put(("host_labels", None))
         if failures:
             raise RuntimeError(f"Test nie powiódł się dla {failures} z {len(hosts)} hostów.")
         self.log("Wszystkie zaznaczone hosty przeszły test.")
@@ -693,7 +813,7 @@ class ProxmoxManager(tk.Tk):
         output_dir = self.configured_output_directory()
         if not output_dir.is_dir():
             return []
-        selected_hosts = set(hosts)
+        selected_hosts = {self.host_address(host) for host in hosts}
         expected = {
             self.shortcut_path_for(record).resolve()
             for record in self.loaded_containers
@@ -741,7 +861,7 @@ class ProxmoxManager(tk.Tk):
             item = self.container_tree.insert(
                 "", tk.END,
                 values=(
-                    record["host"], record["ct"], record["name"], record["status"],
+                    record.get("host_display", record["host"]), record["ct"], record["name"], record["status"],
                     record["ip"] or "—", record.get("ssh", "nie sprawdzono"),
                     "tak" if record.get("bat") else "nie",
                 ),
@@ -758,7 +878,6 @@ class ProxmoxManager(tk.Tk):
     def upload_keys(self, hosts):
         key = Path(os.path.expandvars(os.path.expanduser(self.key_path.get().strip())))
         remote_key_path = self.validated_remote_key_path()
-        proxmox_user = self.validated_user("proxmox_user")
         timeout = self.validated_timeout()
         if not key.is_file():
             raise FileNotFoundError(f"Nie znaleziono klucza publicznego: {key}")
@@ -767,10 +886,14 @@ class ProxmoxManager(tk.Tk):
 
         self.log("Wysyłanie klucza publicznego. SCP może otworzyć okno do wpisania hasła.")
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        for host in hosts:
+        for host_profile in hosts:
+            host = self.host_address(host_profile)
             self.log(f"[{host}] Wysyłanie {key.name} -> {remote_key_path}")
             result = subprocess.run(
-                ["scp.exe", "-o", f"ConnectTimeout={timeout}", str(key), f"{proxmox_user}@{host}:{remote_key_path}"],
+                [
+                    "scp.exe", "-P", str(host_profile["port"]), "-o", f"ConnectTimeout={timeout}",
+                    str(key), f"{host_profile['user']}@{host}:{remote_key_path}",
+                ],
                 creationflags=flags,
                 check=False,
             )
@@ -820,13 +943,14 @@ class ProxmoxManager(tk.Tk):
 
     def configure_lxc(self, _hosts, containers):
         remote_key_path = self.validated_remote_key_path()
-        proxmox_user = self.validated_user("proxmox_user")
         timeout = self.validated_timeout()
+        profiles = {self.host_address(host): host for host in _hosts}
         grouped = {}
         for container in containers:
             grouped.setdefault(container["host"], []).append(container)
 
         for host_index, (host, host_containers) in enumerate(grouped.items(), start=1):
+            host_profile = profiles[host]
             self.set_progress(host_index - 1, len(grouped), f"{host_index - 1}/{len(grouped)}")
             ct_ids = " ".join(container["ct"] for container in host_containers)
             configure_script = (
@@ -835,7 +959,7 @@ class ProxmoxManager(tk.Tk):
                 .replace("__SELECTED_CT_IDS__", ct_ids)
             )
             self.log(f"[{host}] Konfiguracja SSH w LXC: {ct_ids}")
-            result = run_ssh_script(host, configure_script, proxmox_user, timeout)
+            result = run_ssh_script(host, configure_script, host_profile["user"], host_profile["port"], timeout)
             output = result.stdout.decode("utf-8", errors="replace").strip()
             if output:
                 for line in output.splitlines():
@@ -879,7 +1003,8 @@ class ProxmoxManager(tk.Tk):
         self.log(f"Gotowe: utworzono {created} skrótów w {output_dir}")
 
     def run_all(self, hosts, containers):
-        target_hosts = list(dict.fromkeys(container["host"] for container in containers))
+        selected_addresses = {container["host"] for container in containers}
+        target_hosts = [host for host in hosts if self.host_address(host) in selected_addresses]
         self.generate_ssh_key()
         self.upload_keys(target_hosts)
         self.configure_lxc(target_hosts, containers)

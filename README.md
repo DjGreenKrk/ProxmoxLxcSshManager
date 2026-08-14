@@ -1,17 +1,19 @@
 # Proxmox LXC SSH Manager
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/releases)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/actions/workflows/tests.yml/badge.svg)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/actions/workflows/tests.yml)
 
 Graficzne narzędzie dla Windows do zarządzania dostępem SSH do kontenerów LXC na hostach Proxmox.
 
-Aktualna wersja: **0.3.0**
+Aktualna wersja: **0.4.0**
 
 ## Funkcje
 
 - zarządzanie listą hostów Proxmox;
+- osobne ustawienia adresu, użytkownika i portu SSH dla każdego hosta;
 - generowanie lokalnej pary kluczy Ed25519;
 - przesyłanie klucza publicznego na wybrane hosty;
 - pobieranie i selekcja kontenerów LXC;
@@ -66,4 +68,18 @@ Prefiksy IP służą do wyboru właściwego adresu z `hostname -I` wewnątrz kon
 Nie muszą należeć do tej samej sieci co host Proxmox. Kilka wartości można podać
 po przecinku, średniku lub spacji, np. `192.168.0., 10.20.0., 172.16.5.`.
 
+Każdy host Proxmox ma własny profil połączenia w formacie `użytkownik@adres:port`.
+Starszy config z tekstową listą hostów i globalnym `proxmox_user` jest migrowany
+automatycznie przy wczytaniu.
+Po udanym teście hosta aplikacja zapisuje jego zdalną nazwę i pokazuje wpis jako
+`nazwa-hosta — użytkownik@adres:port`.
+
 Historia zmian znajduje się w [docs/CHANGELOG.md](docs/CHANGELOG.md), a plan rozwoju w [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Testy
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Ten sam zestaw jest uruchamiany przez GitHub Actions na Pythonie 3.10 i 3.12.
