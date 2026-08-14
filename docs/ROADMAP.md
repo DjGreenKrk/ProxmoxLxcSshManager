@@ -8,7 +8,6 @@
 - licznik zaznaczonych hostów i kontenerów;
 - czytelniejsze stany pracy, błędów i trybu podglądu;
 - czyszczenie oraz kopiowanie dziennika z poziomu GUI;
-- anulowanie kolejnych etapów długiej operacji;
 - przygotowanie pojedynczego pliku EXE;
 - testy regresji logiki interfejsu i pakowania.
 

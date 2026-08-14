@@ -10,6 +10,7 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 - powtarzalny build pojedynczego pliku EXE przy użyciu PyInstaller;
 - skrypt tworzący przenośny pakiet ZIP z EXE, README i licencją.
 - przełącznik kompletnego trybu ciemnego obejmującego formularze, zakładki, tabelę LXC, listę hostów i dziennik; wybór jest zapamiętywany w configu.
+- przycisk bezpiecznego anulowania, który zatrzymuje pracę przed kolejnym hostem, LXC lub etapem bez przerywania aktywnej operacji w połowie.
 
 ### Zmieniono
 

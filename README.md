@@ -32,6 +32,7 @@ Aktualna wersja rozwojowa: **0.6.0**
 - instalowanie OpenSSH przez `apt-get`, `apk` albo `dnf` oraz obsługę systemd i OpenRC.
 - zakładkowy interfejs z osobnymi widokami hostów i kontenerów, licznikami zaznaczeń oraz narzędziami dziennika.
 - przełączany jasny i ciemny motyw zapamiętywany w lokalnym configu.
+- bezpieczne anulowanie długiej pracy przed kolejnym hostem, LXC lub etapem zbiorczym.
 
 ## Wymagania
 
@@ -67,6 +68,10 @@ Plik jest pomijany przez Git, ponieważ może zawierać adresy i ścieżki użyt
 
 Przycisk `Wykonaj dla zaznaczonych LXC` realizuje tylko krok 5 dla wybranych
 kontenerów. Nie generuje klucza i nie wysyła go ponownie na hosty Proxmox.
+
+Podczas pracy dostępny jest przycisk `Anuluj`. Żądanie nie przerywa brutalnie
+aktualnego `pct`, instalacji pakietu ani zapisu pliku; zatrzymuje wykonanie przed
+kolejnym bezpiecznym krokiem i zapisuje informację w dzienniku.
 
 Wyniki diagnostyki są bieżącym stanem sesji i nie są zapisywane w configu.
 Przycisk `Zaufaj nowym kluczom` używa polityki OpenSSH `accept-new`: zapisuje

@@ -31,6 +31,12 @@ DEFAULT_REMOTE_KEY_NAME = "proxmox_lxc_access.pub"
 PCT_DISCOVERY_TIMEOUT_SECONDS = 15
 PCT_CONFIGURATION_TIMEOUT_SECONDS = 300
 HIDDEN_PROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+class OperationCancelled(Exception):
+    """Raised after the user requests a safe stop between operation steps."""
+
+
 DEFAULT_SETTINGS = {
     "hosts": DEFAULT_HOSTS,
     "public_key": str(DEFAULT_PUBLIC_KEY),
@@ -330,6 +336,7 @@ class ProxmoxManager(tk.Tk):
         self.minsize(940, 760)
         self.log_queue = queue.Queue()
         self.worker_running = False
+        self.cancel_event = threading.Event()
         self.container_records = {}
         self.loaded_containers = []
         self.loaded_hosts = set()
@@ -613,6 +620,8 @@ class ProxmoxManager(tk.Tk):
         self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", length=220)
         self.progress_bar.grid(row=0, column=1, padx=(8, 6))
         ttk.Label(status_frame, textvariable=self.progress_text, width=14, anchor="e").grid(row=0, column=2)
+        self.cancel_button = ttk.Button(status_frame, text="Anuluj", command=self.request_cancel, state="disabled")
+        self.cancel_button.grid(row=0, column=3, padx=(8, 0))
 
     def update_selection_counts(self):
         self.host_selection_count.set(f"Zaznaczone hosty: {len(self.host_list.curselection())}")
@@ -688,6 +697,18 @@ class ProxmoxManager(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(content)
         self.status.set("Dziennik skopiowany do schowka")
+
+    def request_cancel(self):
+        if not self.worker_running or self.cancel_event.is_set():
+            return
+        self.cancel_event.set()
+        self.cancel_button.configure(state="disabled")
+        self.status.set("Anulowanie po bieżącym kroku…")
+        self.log("Zażądano anulowania — kończę bezpiecznie po bieżącym kroku.")
+
+    def raise_if_cancelled(self, context="operację"):
+        if self.cancel_event.is_set():
+            raise OperationCancelled(f"Anulowano {context}.")
 
     def _refresh_hosts(self):
         self.host_list.delete(0, tk.END)
@@ -956,12 +977,14 @@ class ProxmoxManager(tk.Tk):
             )
             return
         self._persist()
+        self.cancel_event.clear()
         self.worker_running = True
         self.status.set("Praca w toku…")
         self.progress_bar.configure(value=0, maximum=1)
         self.progress_text.set("")
         for button in self.action_buttons:
             button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
 
         def worker():
             try:
@@ -969,6 +992,8 @@ class ProxmoxManager(tk.Tk):
                     operation(hosts, containers)
                 else:
                     operation(hosts)
+            except OperationCancelled as error:
+                self.log(str(error))
             except Exception as error:
                 self.log(f"BŁĄD: {error}")
             finally:
@@ -993,6 +1018,7 @@ class ProxmoxManager(tk.Tk):
                     self.status.set("Gotowy")
                     for button in self.action_buttons:
                         button.configure(state="normal")
+                    self.cancel_button.configure(state="disabled")
                 elif kind == "containers":
                     self.show_container_records(value)
                 elif kind == "refresh_containers":
@@ -1008,10 +1034,12 @@ class ProxmoxManager(tk.Tk):
         self.after(100, self._drain_log_queue)
 
     def load_containers(self, hosts):
+        self.raise_if_cancelled("ładowanie kontenerów")
         timeout = self.validated_timeout()
         records = []
 
         for host_index, host_profile in enumerate(hosts, start=1):
+            self.raise_if_cancelled("ładowanie kontenerów")
             host = self.host_address(host_profile)
             discover_script = (
                 DISCOVER_SCRIPT
@@ -1073,6 +1101,7 @@ class ProxmoxManager(tk.Tk):
         self.log_queue.put(("containers", records))
 
     def test_hosts(self, hosts):
+        self.raise_if_cancelled("testowanie hostów")
         timeout = self.validated_timeout()
         script = (
             "node_name=$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)\n"
@@ -1083,6 +1112,7 @@ class ProxmoxManager(tk.Tk):
         failures = 0
         names_changed = False
         for index, host_profile in enumerate(hosts, start=1):
+            self.raise_if_cancelled("testowanie hostów")
             host = self.host_address(host_profile)
             self.set_progress(index - 1, len(hosts), f"{index - 1}/{len(hosts)}")
             self.log(f"[{host}] Test SSH i pct…")
@@ -1117,6 +1147,7 @@ class ProxmoxManager(tk.Tk):
         self._check_container_ssh(containers, accept_new=True)
 
     def _check_container_ssh(self, containers, accept_new=False):
+        self.raise_if_cancelled("sprawdzanie SSH w LXC")
         lxc_user = self.validated_user("lxc_user")
         timeout = self.validated_timeout()
         candidates = [record for record in containers if record["status"] == "running" and record["ip"]]
@@ -1136,6 +1167,10 @@ class ProxmoxManager(tk.Tk):
                 for record in candidates
             }
             for future in as_completed(futures):
+                if self.cancel_event.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                    self.raise_if_cancelled("sprawdzanie SSH w LXC")
                 record = futures[future]
                 try:
                     ssh_status, output = future.result()
@@ -1186,6 +1221,7 @@ class ProxmoxManager(tk.Tk):
         )
 
     def archive_stale_shortcuts(self, hosts):
+        self.raise_if_cancelled("archiwizację skrótów")
         stale = self.find_stale_shortcuts(hosts)
         if not stale:
             self.log("Nie znaleziono nieaktualnych skrótów BAT.")
@@ -1193,11 +1229,13 @@ class ProxmoxManager(tk.Tk):
         archive_dir = self.configured_output_directory() / "_archive" / datetime.now().strftime("%Y%m%d-%H%M%S")
         if self.dry_run.get():
             for source in stale:
+                self.raise_if_cancelled("podgląd archiwizacji skrótów")
                 self.log(f"PODGLĄD: zostałby zarchiwizowany {source.name} -> {archive_dir}")
             self.log(f"PODGLĄD: zaplanowano archiwizację {len(stale)} nieaktualnych skrótów.")
             return
         archive_dir.mkdir(parents=True, exist_ok=True)
         for index, source in enumerate(stale, start=1):
+            self.raise_if_cancelled("archiwizację skrótów")
             self.set_progress(index - 1, len(stale), f"{index - 1}/{len(stale)}")
             destination = archive_dir / source.name
             suffix = 1
@@ -1240,6 +1278,7 @@ class ProxmoxManager(tk.Tk):
         self.log_queue.put(("progress", (current, total, label)))
 
     def upload_keys(self, hosts):
+        self.raise_if_cancelled("wysyłanie klucza")
         key = Path(os.path.expandvars(os.path.expanduser(self.key_path.get().strip())))
         remote_key_path = self.validated_remote_key_path()
         timeout = self.validated_timeout()
@@ -1252,6 +1291,7 @@ class ProxmoxManager(tk.Tk):
         self.log("Wysyłanie klucza publicznego. Okno konsoli pojawi się tylko wtedy, gdy SCP wymaga interakcji.")
         interactive_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         for host_profile in hosts:
+            self.raise_if_cancelled("wysyłanie klucza")
             host = self.host_address(host_profile)
             self.log(f"[{host}] Wysyłanie {key.name} -> {remote_key_path}")
             if self.dry_run.get():
@@ -1280,6 +1320,7 @@ class ProxmoxManager(tk.Tk):
             self.log(f"[{host}] Klucz wysłany poprawnie.")
 
     def generate_ssh_key(self, _hosts=None):
+        self.raise_if_cancelled("generowanie klucza")
         public_key = Path(os.path.expandvars(os.path.expanduser(self.key_path.get().strip())))
         if public_key.suffix.lower() != ".pub":
             raise ValueError("Ścieżka klucza publicznego powinna kończyć się rozszerzeniem .pub.")
@@ -1325,6 +1366,7 @@ class ProxmoxManager(tk.Tk):
         self.log(f"Utworzono klucz publiczny: {public_key}")
 
     def configure_lxc(self, _hosts, containers):
+        self.raise_if_cancelled("konfigurację SSH w LXC")
         remote_key_path = self.validated_remote_key_path()
         timeout = self.validated_timeout()
         profiles = {self.host_address(host): host for host in _hosts}
@@ -1333,6 +1375,7 @@ class ProxmoxManager(tk.Tk):
             grouped.setdefault(container["host"], []).append(container)
 
         for host_index, (host, host_containers) in enumerate(grouped.items(), start=1):
+            self.raise_if_cancelled("konfigurację SSH w LXC")
             host_profile = profiles[host]
             self.set_progress(host_index - 1, len(grouped), f"{host_index - 1}/{len(grouped)}")
             ct_ids = " ".join(container["ct"] for container in host_containers)
@@ -1364,12 +1407,14 @@ class ProxmoxManager(tk.Tk):
         self.log("Konfiguracja SSH zakończona.")
 
     def generate_shortcuts(self, _hosts, containers):
+        self.raise_if_cancelled("generowanie skrótów")
         created = 0
         lxc_user = self.validated_user("lxc_user")
         output_dir = self.configured_output_directory()
         if not self.dry_run.get():
             output_dir.mkdir(parents=True, exist_ok=True)
         for index, container in enumerate(containers, start=1):
+            self.raise_if_cancelled("generowanie skrótów")
             self.set_progress(index - 1, len(containers), f"{index - 1}/{len(containers)}")
             host = container["host"]
             ct_id = container["ct"]
@@ -1403,8 +1448,11 @@ class ProxmoxManager(tk.Tk):
     def run_selected_lxc(self, hosts, containers):
         selected_addresses = {container["host"] for container in containers}
         target_hosts = [host for host in hosts if self.host_address(host) in selected_addresses]
+        self.raise_if_cancelled("operację dla LXC")
         self.configure_lxc(target_hosts, containers)
+        self.raise_if_cancelled("operację dla LXC")
         self.check_container_ssh(target_hosts, containers)
+        self.raise_if_cancelled("operację dla LXC")
         self.generate_shortcuts(target_hosts, containers)
 
     def validated_remote_key_name(self):

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -158,6 +159,7 @@ class DryRunTests(unittest.TestCase):
     def test_upload_preview_does_not_call_scp_or_require_existing_key(self):
         messages = []
         fake = SimpleNamespace(
+            raise_if_cancelled=lambda _context: None,
             key_path=SimpleNamespace(get=lambda: "missing-preview-key.pub"),
             dry_run=SimpleNamespace(get=lambda: True),
             validated_remote_key_path=lambda: "/root/access.pub",
@@ -180,6 +182,7 @@ class DryRunTests(unittest.TestCase):
             key = Path(directory) / "access.pub"
             key.write_text("ssh-ed25519 AAAA test", encoding="utf-8")
             fake = SimpleNamespace(
+                raise_if_cancelled=lambda _context: None,
                 key_path=SimpleNamespace(get=lambda: str(key)),
                 dry_run=SimpleNamespace(get=lambda: False),
                 validated_remote_key_path=lambda: "/root/access.pub",
@@ -209,6 +212,8 @@ class ContainerDiagnosticsTests(unittest.TestCase):
             "ip": "192.0.2.155",
         }
         fake = SimpleNamespace(
+            raise_if_cancelled=lambda _context: None,
+            cancel_event=threading.Event(),
             validated_user=lambda _name: "root",
             validated_timeout=lambda: 8,
             log_queue=SimpleNamespace(put=lambda _item: None),
@@ -232,6 +237,7 @@ class ContextualWorkflowTests(unittest.TestCase):
     def test_selected_lxc_workflow_does_not_generate_or_upload_keys(self):
         calls = []
         fake = SimpleNamespace(
+            raise_if_cancelled=lambda _context: None,
             host_address=lambda host: host["address"],
             configure_lxc=lambda hosts, containers: calls.append(("configure", hosts, containers)),
             check_container_ssh=lambda hosts, containers: calls.append(("check", hosts, containers)),
@@ -249,6 +255,23 @@ class ContextualWorkflowTests(unittest.TestCase):
 
         self.assertEqual([call[0] for call in calls], ["configure", "check", "shortcuts"])
         self.assertEqual(calls[0][1], [hosts[1]])
+
+    def test_selected_lxc_workflow_stops_before_next_stage_after_cancel(self):
+        cancel_event = threading.Event()
+        calls = []
+        fake = SimpleNamespace(cancel_event=cancel_event)
+        fake.raise_if_cancelled = lambda context: manager.ProxmoxManager.raise_if_cancelled(fake, context)
+        fake.host_address = lambda host: host["address"]
+        fake.configure_lxc = lambda hosts, containers: (calls.append("configure"), cancel_event.set())
+        fake.check_container_ssh = lambda hosts, containers: calls.append("check")
+        fake.generate_shortcuts = lambda hosts, containers: calls.append("shortcuts")
+        hosts = [{"address": "pve.example.test"}]
+        containers = [{"host": "pve.example.test", "ct": "155"}]
+
+        with self.assertRaises(manager.OperationCancelled):
+            manager.ProxmoxManager.run_selected_lxc(fake, hosts, containers)
+
+        self.assertEqual(calls, ["configure"])
 
 
 class FormattingTests(unittest.TestCase):
