@@ -10,7 +10,9 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 - konfigurowalne per host: adres IP lub DNS, użytkownik SSH i port;
 - dialog dodawania oraz edycji hosta w GUI;
 - czytelny format wpisów hostów `użytkownik@adres:port`;
-- automatyczne pobieranie, zapisywanie i wyświetlanie zdalnej nazwy hosta po udanym teście.
+- automatyczne pobieranie, zapisywanie i wyświetlanie zdalnej nazwy hosta po udanym teście;
+- trwały zestaw testów jednostkowych dla migracji configu, profili i komend SSH;
+- workflow GitHub Actions dla Pythona 3.10 i 3.12.
 
 ### Zmieniono
 

@@ -4,6 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/actions/workflows/tests.yml/badge.svg)](https://github.com/DjGreenKrk/ProxmoxLxcSshManager/actions/workflows/tests.yml)
 
 Graficzne narzędzie dla Windows do zarządzania dostępem SSH do kontenerów LXC na hostach Proxmox.
 
@@ -74,3 +75,11 @@ Po udanym teście hosta aplikacja zapisuje jego zdalną nazwę i pokazuje wpis j
 `nazwa-hosta — użytkownik@adres:port`.
 
 Historia zmian znajduje się w [docs/CHANGELOG.md](docs/CHANGELOG.md), a plan rozwoju w [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Testy
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Ten sam zestaw jest uruchamiany przez GitHub Actions na Pythonie 3.10 i 3.12.
