@@ -9,7 +9,8 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 - osobny profil połączenia dla każdego hosta Proxmox;
 - konfigurowalne per host: adres IP lub DNS, użytkownik SSH i port;
 - dialog dodawania oraz edycji hosta w GUI;
-- czytelny format wpisów hostów `użytkownik@adres:port`.
+- czytelny format wpisów hostów `użytkownik@adres:port`;
+- automatyczne pobieranie, zapisywanie i wyświetlanie zdalnej nazwy hosta po udanym teście.
 
 ### Zmieniono
 

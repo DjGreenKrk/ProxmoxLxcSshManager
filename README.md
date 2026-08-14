@@ -70,5 +70,7 @@ po przecinku, średniku lub spacji, np. `192.168.0., 10.20.0., 172.16.5.`.
 Każdy host Proxmox ma własny profil połączenia w formacie `użytkownik@adres:port`.
 Starszy config z tekstową listą hostów i globalnym `proxmox_user` jest migrowany
 automatycznie przy wczytaniu.
+Po udanym teście hosta aplikacja zapisuje jego zdalną nazwę i pokazuje wpis jako
+`nazwa-hosta — użytkownik@adres:port`.
 
 Historia zmian znajduje się w [docs/CHANGELOG.md](docs/CHANGELOG.md), a plan rozwoju w [docs/ROADMAP.md](docs/ROADMAP.md).

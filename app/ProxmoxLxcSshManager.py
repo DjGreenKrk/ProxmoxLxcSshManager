@@ -143,13 +143,17 @@ def load_settings():
             address = str(profile.get("address", "")).strip()
             user = str(profile.get("user", legacy_user)).strip()
             port = int(profile.get("port", 22))
+            name = str(profile.get("name", "")).strip()
             if not re.fullmatch(r"[A-Za-z0-9._:-]+", address):
                 raise ValueError(f"Nieprawidłowy adres hosta: {address}")
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", user):
                 raise ValueError(f"Nieprawidłowy użytkownik hosta: {user}")
             if not 1 <= port <= 65535:
                 raise ValueError(f"Nieprawidłowy port hosta: {port}")
-            normalized_hosts.append({"address": address, "user": user, "port": port})
+            normalized = {"address": address, "user": user, "port": port}
+            if name:
+                normalized["name"] = name
+            normalized_hosts.append(normalized)
         merged["hosts"] = normalized_hosts
         merged.pop("proxmox_user", None)
         return merged
@@ -246,6 +250,8 @@ class HostDialog(simpledialog.Dialog):
             messagebox.showerror(APP_TITLE, "Port SSH musi mieścić się w zakresie 1-65535.", parent=self)
             return False
         self.result = {"address": address, "user": user, "port": port}
+        if address == self.initial.get("address") and self.initial.get("name"):
+            self.result["name"] = self.initial["name"]
         return True
 
 
@@ -553,7 +559,16 @@ class ProxmoxManager(tk.Tk):
 
     @staticmethod
     def host_label(host):
-        return f"{host['user']}@{host['address']}:{host['port']}"
+        connection = f"{host['user']}@{host['address']}:{host['port']}"
+        return f"{host['name']} — {connection}" if host.get("name") else connection
+
+    def refresh_host_labels(self):
+        selected = set(self.host_list.curselection())
+        self.host_list.delete(0, tk.END)
+        for index, host in enumerate(self.hosts):
+            self.host_list.insert(tk.END, self.host_label(host))
+            if index in selected:
+                self.host_list.selection_set(index)
 
     @staticmethod
     def host_address(host):
@@ -657,6 +672,8 @@ class ProxmoxManager(tk.Tk):
                     current, total, label = value
                     self.progress_bar.configure(maximum=max(total, 1), value=current)
                     self.progress_text.set(label or f"{current}/{total}")
+                elif kind == "host_labels":
+                    self.refresh_host_labels()
         except queue.Empty:
             pass
         self.after(100, self._drain_log_queue)
@@ -704,20 +721,37 @@ class ProxmoxManager(tk.Tk):
 
     def test_hosts(self, hosts):
         timeout = self.validated_timeout()
-        script = "command -v pct >/dev/null || exit 10\npveversion 2>/dev/null || echo 'Proxmox version unavailable'\n"
+        script = (
+            "node_name=$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)\n"
+            "printf 'NODE_NAME|%s\\n' \"$node_name\"\n"
+            "command -v pct >/dev/null || exit 10\n"
+            "pveversion 2>/dev/null || echo 'Proxmox version unavailable'\n"
+        )
         failures = 0
+        names_changed = False
         for index, host_profile in enumerate(hosts, start=1):
             host = self.host_address(host_profile)
             self.set_progress(index - 1, len(hosts), f"{index - 1}/{len(hosts)}")
             self.log(f"[{host}] Test SSH i pct…")
             result = run_ssh_script(host, script, host_profile["user"], host_profile["port"], timeout)
-            output = result.stdout.decode("utf-8", errors="replace").strip()
+            output_lines = result.stdout.decode("utf-8", errors="replace").splitlines()
+            name_line = next((line for line in output_lines if line.startswith("NODE_NAME|")), "")
+            discovered_name = name_line.partition("|")[2].strip()
+            output = "\n".join(line for line in output_lines if not line.startswith("NODE_NAME|")).strip()
+            if discovered_name and host_profile.get("name") != discovered_name:
+                host_profile["name"] = discovered_name
+                names_changed = True
+                self.log(f"[{host}] Zapisano nazwę hosta: {discovered_name}")
             if result.returncode == 0:
                 self.log(f"[{host}] OK — {output or 'SSH i pct dostępne'}")
             else:
                 failures += 1
                 self.log(f"[{host}] BŁĄD ({result.returncode}) — {output or 'brak odpowiedzi'}")
             self.set_progress(index, len(hosts), f"{index}/{len(hosts)}")
+        if names_changed:
+            self.settings["hosts"] = self.hosts
+            save_settings(self.settings)
+            self.log_queue.put(("host_labels", None))
         if failures:
             raise RuntimeError(f"Test nie powiódł się dla {failures} z {len(hosts)} hostów.")
         self.log("Wszystkie zaznaczone hosty przeszły test.")
