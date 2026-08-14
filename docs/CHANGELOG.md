@@ -24,7 +24,8 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
 ### Naprawiono
 
-- świeży config pozostawia prefiksy LXC puste i automatycznie preferuje pulę `/24` adresu hosta Proxmox; dla hostów DNS lub braku dopasowania wybiera pierwszy dostępny IPv4 i informuje o fallbacku w dzienniku.
+- usunięto zależność wykrywania IP od ręcznych prefiksów; aplikacja wybiera adres z interfejsów LXC skonfigurowanych w Proxmox, ignorując sieci Dockera i VPN;
+- użytkownik może ręcznie nadpisać adres wybranego LXC, a czytelny wpis `host`, `ct`, `name` i `ip` zostaje zapisany w configu.
 
 ## 0.5.0 — 2026-08-14
 

@@ -27,7 +27,7 @@ class VersionTests(unittest.TestCase):
 
 
 class SettingsMigrationTests(unittest.TestCase):
-    def test_legacy_hosts_and_prefix_are_migrated(self):
+    def test_legacy_hosts_are_migrated_and_obsolete_prefix_is_removed(self):
         legacy = {
             "hosts": ["192.168.0.9", "pve.example.test"],
             "proxmox_user": "operator",
@@ -46,7 +46,8 @@ class SettingsMigrationTests(unittest.TestCase):
                 {"address": "pve.example.test", "user": "operator", "port": 22},
             ],
         )
-        self.assertEqual(settings["lxc_ip_prefixes"], ["10.20.0."])
+        self.assertNotIn("lxc_ip_prefixes", settings)
+        self.assertNotIn("lxc_ip_prefix", settings)
         self.assertNotIn("proxmox_user", settings)
 
     def test_current_host_name_is_preserved(self):
@@ -69,6 +70,20 @@ class SettingsMigrationTests(unittest.TestCase):
 
         self.assertEqual(settings["hosts"], current["hosts"])
         self.assertTrue(settings["dark_mode"])
+
+    def test_readable_lxc_ip_override_is_preserved(self):
+        current = {
+            "lxc_ip_overrides": [
+                {"host": "192.168.0.10", "ct": "105", "name": "n8n", "ip": "10.0.0.200"}
+            ]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps(current), encoding="utf-8")
+            with patch.object(manager, "CONFIG_FILE", config):
+                settings = manager.load_settings()
+
+        self.assertEqual(settings["lxc_ip_overrides"], current["lxc_ip_overrides"])
 
 
 class SshCommandTests(unittest.TestCase):
@@ -133,10 +148,10 @@ class SshCommandTests(unittest.TestCase):
             self.assertIn(service_manager, manager.CONFIGURE_SCRIPT)
         self.assertIn("timeout __PCT_CONFIGURATION_TIMEOUT__ pct exec", manager.CONFIGURE_SCRIPT)
 
-    def test_discovery_falls_back_when_no_prefix_matches(self):
-        self.assertIn('fallback_ip=""', manager.DISCOVER_SCRIPT)
-        self.assertIn('ip_source="auto"', manager.DISCOVER_SCRIPT)
-        self.assertIn('"$fallback_ip"', manager.DISCOVER_SCRIPT)
+    def test_discovery_uses_proxmox_interface_names(self):
+        self.assertIn("interfaces=$(pct config", manager.DISCOVER_SCRIPT)
+        self.assertIn('ip -o -4 addr show dev "$iface"', manager.DISCOVER_SCRIPT)
+        self.assertIn("default_dev=$(ip -4 route show default", manager.DISCOVER_SCRIPT)
 
 
 class DryRunTests(unittest.TestCase):
@@ -247,9 +262,6 @@ class FormattingTests(unittest.TestCase):
     def test_filename_part_replaces_windows_invalid_characters(self):
         self.assertEqual(manager.safe_filename_part('lxc:<test>|?*'), "lxc__test____")
 
-    def test_host_ipv4_prefix_uses_host_24_pool(self):
-        self.assertEqual(manager.host_ipv4_prefix("192.168.0.10"), "192.168.0.")
-        self.assertEqual(manager.host_ipv4_prefix("pve.example.test"), "")
 
 
 if __name__ == "__main__":

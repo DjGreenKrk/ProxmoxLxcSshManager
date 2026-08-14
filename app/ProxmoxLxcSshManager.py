@@ -36,7 +36,7 @@ DEFAULT_SETTINGS = {
     "public_key": str(DEFAULT_PUBLIC_KEY),
     "remote_key_name": DEFAULT_REMOTE_KEY_NAME,
     "lxc_user": "root",
-    "lxc_ip_prefixes": [],
+    "lxc_ip_overrides": [],
     "remote_key_directory": "/root",
     "connect_timeout_seconds": 8,
     "output_directory": "shortcuts" if FROZEN else "../shortcuts",
@@ -51,26 +51,25 @@ for ct in $(pct list 2>/dev/null | awk 'NR > 1 {print $1}'); do
     name=$(pct config "$ct" 2>/dev/null | sed -n 's/^hostname: //p')
     [ -z "$name" ] && name="lxc-$ct"
     ip=""
-    fallback_ip=""
     ip_source="none"
     if [ "$status" = "running" ]; then
-        addresses=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- hostname -I 2>/dev/null || true)
-        if [ -z "$addresses" ]; then
-            addresses=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- ip -o -4 addr show 2>/dev/null | awk '$3 == "inet" {sub(/\/.*/, "", $4); print $4}' || true)
-        fi
-        for address in $addresses; do
-            case "$address" in
-                127.*) ;;
-                *.*.*.*) [ -z "$fallback_ip" ] && fallback_ip="$address" ;;
-            esac
-            case "$address" in
-                __LXC_IP_PATTERNS__) ip="$address"; ip_source="prefix"; break ;;
-            esac
-        done
-        if [ -z "$ip" ] && [ -n "$fallback_ip" ]; then
-            ip="$fallback_ip"
-            ip_source="auto"
-        fi
+        interfaces=$(pct config "$ct" 2>/dev/null | sed -n 's/^net[0-9][0-9]*:.*name=\([^,]*\).*/\1/p' | tr '\n' ' ')
+        network_result=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- sh -c '
+            default_dev=$(ip -4 route show default 2>/dev/null | awk "NR == 1 {print \$5}")
+            for iface in "$default_dev" "$@"; do
+                [ -z "$iface" ] && continue
+                address=$(ip -o -4 addr show dev "$iface" scope global 2>/dev/null | awk "NR == 1 {sub(/\\/.*/, \"\", \$4); print \$4}")
+                if [ -n "$address" ]; then
+                    [ "$iface" = "$default_dev" ] && source=default || source=proxmox
+                    printf "%s|%s\n" "$address" "$source"
+                    exit 0
+                fi
+            done
+            address=$(hostname -I 2>/dev/null | awk "{for (i=1; i<=NF; i++) if (\$i ~ /^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$/ && \$i !~ /^127\\./) {print \$i; exit}}")
+            [ -n "$address" ] && printf "%s|fallback\n" "$address"
+        ' sh $interfaces 2>/dev/null || true)
+        ip=${network_result%%|*}
+        [ "$network_result" != "$ip" ] && ip_source=${network_result#*|}
     fi
     printf '%s|%s|%s|%s|%s\n' "$ct" "$name" "$status" "$ip" "$ip_source"
 done
@@ -158,10 +157,10 @@ def load_settings():
 
     try:
         settings = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        if "lxc_ip_prefixes" not in settings and "lxc_ip_prefix" in settings:
-            settings["lxc_ip_prefixes"] = [settings.pop("lxc_ip_prefix")]
         merged = DEFAULT_SETTINGS.copy()
         merged.update(settings)
+        merged.pop("lxc_ip_prefix", None)
+        merged.pop("lxc_ip_prefixes", None)
         hosts = merged["hosts"]
         legacy_user = str(settings.get("proxmox_user", "root"))
         if not isinstance(hosts, list):
@@ -184,6 +183,28 @@ def load_settings():
                 normalized["name"] = name
             normalized_hosts.append(normalized)
         merged["hosts"] = normalized_hosts
+        overrides = merged.get("lxc_ip_overrides", [])
+        if isinstance(overrides, dict):
+            overrides = [
+                {"host": key.rsplit("|", 1)[0], "ct": key.rsplit("|", 1)[-1], "name": "", "ip": value}
+                for key, value in overrides.items() if "|" in key
+            ]
+        if not isinstance(overrides, list):
+            raise ValueError("Pole lxc_ip_overrides musi być listą.")
+        normalized_overrides = []
+        for override in overrides:
+            if not isinstance(override, dict):
+                raise ValueError("Każde nadpisanie IP LXC musi być obiektem.")
+            host = str(override.get("host", "")).strip()
+            ct = str(override.get("ct", "")).strip()
+            name = str(override.get("name", "")).strip()
+            address = ipaddress.ip_address(str(override.get("ip", "")).strip())
+            if address.version != 4:
+                raise ValueError(f"Nadpisany adres LXC musi być IPv4: {address}")
+            if not host or not ct.isdigit():
+                raise ValueError("Nadpisanie IP LXC wymaga hosta i numerycznego CTID.")
+            normalized_overrides.append({"host": host, "ct": ct, "name": name, "ip": str(address)})
+        merged["lxc_ip_overrides"] = normalized_overrides
         merged.pop("proxmox_user", None)
         return merged
     except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -252,17 +273,6 @@ def safe_filename_part(value):
     return value or "unnamed"
 
 
-def host_ipv4_prefix(host):
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return ""
-    if address.version != 4:
-        return ""
-    octets = str(address).split(".")
-    return ".".join(octets[:3]) + "."
-
-
 class HostDialog(simpledialog.Dialog):
     def __init__(self, parent, title, initial=None):
         self.initial = initial or {"address": "", "user": "root", "port": 22}
@@ -328,7 +338,10 @@ class ProxmoxManager(tk.Tk):
         self.key_path = tk.StringVar(value=str(self.settings["public_key"]))
         self.remote_key_name = tk.StringVar(value=str(self.settings["remote_key_name"]))
         self.lxc_user = tk.StringVar(value=str(self.settings["lxc_user"]))
-        self.lxc_ip_prefixes = tk.StringVar(value=", ".join(self.settings["lxc_ip_prefixes"]))
+        self.lxc_ip_overrides = {
+            f"{override['host']}|{override['ct']}": dict(override)
+            for override in self.settings.get("lxc_ip_overrides", [])
+        }
         self.remote_key_directory = tk.StringVar(value=str(self.settings["remote_key_directory"]))
         self.connect_timeout = tk.StringVar(value=str(self.settings["connect_timeout_seconds"]))
         self.output_directory = tk.StringVar(value=str(self.settings["output_directory"]))
@@ -432,24 +445,21 @@ class ProxmoxManager(tk.Tk):
         ttk.Label(settings_frame, text="Użytkownik LXC:").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(settings_frame, textvariable=self.lxc_user).grid(row=0, column=1, sticky="ew", pady=2)
 
-        ttk.Label(settings_frame, text="Prefiksy IP kontenerów:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.lxc_ip_prefixes).grid(row=1, column=1, sticky="ew", pady=2)
-
         ttk.Label(
             settings_frame,
-            text="Opcjonalne. Puste pole używa puli /24 hosta; kilka wartości oddziel przecinkami, średnikami lub spacjami.",
+            text="Adresy LXC są wykrywane z interfejsów skonfigurowanych w Proxmox; ręczne IP można ustawić w zakładce kontenerów.",
             style="Subtitle.TLabel",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 6))
 
-        ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.remote_key_directory).grid(row=3, column=1, sticky="ew", pady=2)
+        ttk.Label(settings_frame, text="Katalog klucza na Proxmox:").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.remote_key_directory).grid(row=2, column=1, sticky="ew", pady=2)
 
-        ttk.Label(settings_frame, text="Timeout SSH [s]:").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(settings_frame, textvariable=self.connect_timeout).grid(row=4, column=1, sticky="ew", pady=2)
+        ttk.Label(settings_frame, text="Timeout SSH [s]:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(settings_frame, textvariable=self.connect_timeout).grid(row=3, column=1, sticky="ew", pady=2)
 
-        ttk.Label(settings_frame, text="Katalog skrótów BAT:").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(settings_frame, text="Katalog skrótów BAT:").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
         output_row = ttk.Frame(settings_frame)
-        output_row.grid(row=5, column=1, sticky="ew", pady=2)
+        output_row.grid(row=4, column=1, sticky="ew", pady=2)
         output_row.columnconfigure(0, weight=1)
         ttk.Entry(output_row, textvariable=self.output_directory).grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(output_row, text="Wybierz…", command=self.choose_output_directory).grid(row=0, column=1)
@@ -509,6 +519,7 @@ class ProxmoxManager(tk.Tk):
             style="Containers.Treeview",
         )
         self.container_tree.bind("<<TreeviewSelect>>", lambda _event: self.update_selection_counts())
+        self.container_tree.bind("<Double-1>", self.edit_container_ip_from_event)
         headings = {
             "host": ("Host Proxmox", 145),
             "ct": ("CTID", 60),
@@ -533,9 +544,10 @@ class ProxmoxManager(tk.Tk):
         ttk.Label(counts, textvariable=self.container_count).grid(row=0, column=0, sticky="w")
         ttk.Label(counts, text="  •  ").grid(row=0, column=1)
         ttk.Label(counts, textvariable=self.container_selection_count).grid(row=0, column=2, sticky="w")
-        ttk.Button(container_footer, text="Sprawdź SSH", command=lambda: self.start_task(self.check_container_ssh, require_containers=True)).grid(row=0, column=1, padx=4)
-        ttk.Button(container_footer, text="Zaufaj nowym kluczom", command=lambda: self.start_task(self.trust_container_host_keys, require_containers=True)).grid(row=0, column=2, padx=4)
-        ttk.Button(container_footer, text="Zaznacz widoczne LXC", command=self.select_all_containers).grid(row=0, column=3, sticky="e")
+        ttk.Button(container_footer, text="Edytuj IP", command=self.edit_selected_container_ip).grid(row=0, column=1, padx=4)
+        ttk.Button(container_footer, text="Sprawdź SSH", command=lambda: self.start_task(self.check_container_ssh, require_containers=True)).grid(row=0, column=2, padx=4)
+        ttk.Button(container_footer, text="Zaufaj nowym kluczom", command=lambda: self.start_task(self.trust_container_host_keys, require_containers=True)).grid(row=0, column=3, padx=4)
+        ttk.Button(container_footer, text="Zaznacz widoczne LXC", command=self.select_all_containers).grid(row=0, column=4, sticky="e")
 
         container_actions = ttk.LabelFrame(
             self.containers_tab,
@@ -697,8 +709,11 @@ class ProxmoxManager(tk.Tk):
         self.settings["remote_key_name"] = self.remote_key_name.get().strip()
         self.settings.pop("proxmox_user", None)
         self.settings["lxc_user"] = self.lxc_user.get().strip()
-        self.settings["lxc_ip_prefixes"] = self.validated_ip_prefixes()
         self.settings.pop("lxc_ip_prefix", None)
+        self.settings.pop("lxc_ip_prefixes", None)
+        self.settings["lxc_ip_overrides"] = sorted(
+            self.lxc_ip_overrides.values(), key=lambda item: (item["host"], int(item["ct"]))
+        )
         self.settings["remote_key_directory"] = self.remote_key_directory.get().strip()
         self.settings["connect_timeout_seconds"] = self.connect_timeout.get().strip()
         self.settings["output_directory"] = self.output_directory.get().strip()
@@ -828,6 +843,69 @@ class ProxmoxManager(tk.Tk):
     def selected_containers(self):
         return [self.container_records[item] for item in self.container_tree.selection()]
 
+    @staticmethod
+    def container_override_key(record):
+        return f"{record['host']}|{record['ct']}"
+
+    def edit_container_ip_from_event(self, event):
+        if self.container_tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.container_tree.identify_column(event.x) != "#5":
+            return
+        item = self.container_tree.identify_row(event.y)
+        if item:
+            self.container_tree.selection_set(item)
+            self.edit_selected_container_ip()
+
+    def edit_selected_container_ip(self):
+        if self.worker_running:
+            return
+        containers = self.selected_containers()
+        if len(containers) != 1:
+            messagebox.showwarning(APP_TITLE, "Zaznacz dokładnie jeden LXC do edycji adresu IP.", parent=self)
+            return
+        record = containers[0]
+        key = self.container_override_key(record)
+        current_override = self.lxc_ip_overrides.get(key, {}).get("ip", "")
+        value = simpledialog.askstring(
+            "Ręczny adres IP LXC",
+            f"LXC {record['ct']} ({record['name']})\n"
+            f"Adres wykryty automatycznie: {record.get('detected_ip') or 'brak'}\n\n"
+            "Podaj ręczny IPv4 albo pozostaw pole puste, aby używać automatycznego wykrywania:",
+            initialvalue=current_override,
+            parent=self,
+        )
+        if value is None:
+            return
+        value = value.strip()
+        if value:
+            try:
+                address = ipaddress.ip_address(value)
+            except ValueError:
+                messagebox.showerror(APP_TITLE, "Podany adres IP jest nieprawidłowy.", parent=self)
+                return
+            if address.version != 4:
+                messagebox.showerror(APP_TITLE, "Nadpisany adres musi być adresem IPv4.", parent=self)
+                return
+            value = str(address)
+            self.lxc_ip_overrides[key] = {
+                "host": record["host"], "ct": record["ct"], "name": record["name"], "ip": value,
+            }
+            record["ip"] = value
+            record["ip_source"] = "override"
+            self.log(f"[{record['host']}] LXC {record['ct']}: zapisano ręczny adres IP {value}.")
+        else:
+            self.lxc_ip_overrides.pop(key, None)
+            record["ip"] = record.get("detected_ip", "")
+            record["ip_source"] = record.get("detected_ip_source", "none")
+            self.log(f"[{record['host']}] LXC {record['ct']}: przywrócono automatyczne wykrywanie IP.")
+        record["ssh"] = "nie sprawdzono" if record["status"] == "running" and record["ip"] else "—"
+        self.settings["lxc_ip_overrides"] = sorted(
+            self.lxc_ip_overrides.values(), key=lambda item: (item["host"], int(item["ct"]))
+        )
+        save_settings(self.settings)
+        self.apply_container_filter()
+
     def confirm_archive_stale_shortcuts(self):
         if self.worker_running:
             return
@@ -931,23 +1009,15 @@ class ProxmoxManager(tk.Tk):
 
     def load_containers(self, hosts):
         timeout = self.validated_timeout()
-        configured_prefixes = self.validated_ip_prefixes()
         records = []
 
         for host_index, host_profile in enumerate(hosts, start=1):
             host = self.host_address(host_profile)
-            host_prefix = host_ipv4_prefix(host)
-            ip_prefixes = configured_prefixes or ([host_prefix] if host_prefix else [])
-            ip_patterns = "|".join(f"{prefix}*" for prefix in ip_prefixes) or "__NO_PREFIX_MATCH__"
             discover_script = (
                 DISCOVER_SCRIPT
-                .replace("__LXC_IP_PATTERNS__", ip_patterns)
                 .replace("__PCT_DISCOVERY_TIMEOUT__", str(PCT_DISCOVERY_TIMEOUT_SECONDS))
             )
             self.set_progress(host_index - 1, len(hosts), f"{host_index - 1}/{len(hosts)}")
-            if not configured_prefixes:
-                mode = host_prefix or "pierwszy dostępny IPv4 (host DNS/IPv6)"
-                self.log(f"[{host}] Automatyczny wybór puli LXC: {mode}")
             self.log(f"[{host}] Ładowanie listy kontenerów…")
             result = run_ssh_script(
                 host, discover_script, host_profile["user"], host_profile["port"], timeout,
@@ -961,7 +1031,7 @@ class ProxmoxManager(tk.Tk):
 
             for row in output.splitlines():
                 match = re.fullmatch(
-                    r"(\d+)\|([^|]+)\|([^|]+)\|(\d+\.\d+\.\d+\.\d+)?\|(prefix|auto|none)",
+                    r"(\d+)\|([^|]+)\|([^|]+)\|(\d+\.\d+\.\d+\.\d+)?\|(default|proxmox|fallback|none)",
                     row.strip(),
                 )
                 if not match:
@@ -969,27 +1039,35 @@ class ProxmoxManager(tk.Tk):
                         self.log(f"[{host}] Pominięto nieznaną odpowiedź: {row}")
                     continue
                 ct_id, name, status, ip, ip_source = match.groups()
+                override_key = f"{host}|{ct_id}"
+                override = self.lxc_ip_overrides.get(override_key)
+                detected_ip = ip or ""
+                selected_ip = override["ip"] if override else detected_ip
+                selected_source = "override" if override else ip_source
+                if override and override.get("name") != name:
+                    override["name"] = name
                 record = {
                     "host": host,
                     "host_display": host_profile.get("name", host),
                     "ct": ct_id,
                     "name": name,
                     "status": status,
-                    "ip": ip or "",
-                    "ip_source": ip_source,
-                    "ssh": "nie sprawdzono" if status == "running" and ip else "—",
+                    "ip": selected_ip,
+                    "ip_source": selected_source,
+                    "detected_ip": detected_ip,
+                    "detected_ip_source": ip_source,
+                    "ssh": "nie sprawdzono" if status == "running" and selected_ip else "—",
                 }
                 record["bat"] = self.shortcut_path_for(record).is_file()
                 records.append(record)
             self.set_progress(host_index, len(hosts), f"{host_index}/{len(hosts)}")
 
-        automatic = [record for record in records if record.get("ip_source") == "auto"]
-        if automatic:
-            prefix_description = ", ".join(configured_prefixes) or "automatyczna pula hosta"
-            self.log(
-                f"Automatycznie wybrano pierwszy dostępny IPv4 dla {len(automatic)} LXC, "
-                f"ponieważ nie pasował do ustawienia: {prefix_description}."
-            )
+        fallbacks = [record for record in records if record.get("detected_ip_source") == "fallback"]
+        overrides = [record for record in records if record.get("ip_source") == "override"]
+        if fallbacks:
+            self.log(f"Dla {len(fallbacks)} LXC użyto awaryjnego wykrywania pierwszego IPv4.")
+        if overrides:
+            self.log(f"Zastosowano zapisane ręczne adresy IP dla {len(overrides)} LXC.")
         self.log(f"Załadowano {len(records)} kontenerów. Zaznacz te, które chcesz obsłużyć.")
         self.loaded_hosts = {self.host_address(host) for host in hosts}
         self.log_queue.put(("containers", records))
@@ -1355,20 +1433,6 @@ class ProxmoxManager(tk.Tk):
         if not 1 <= timeout <= 300:
             raise ValueError("connect_timeout_seconds musi mieścić się w zakresie 1-300.")
         return timeout
-
-    def validated_ip_prefixes(self):
-        raw = self.lxc_ip_prefixes.get() if hasattr(self, "lxc_ip_prefixes") else self.settings["lxc_ip_prefixes"]
-        values = raw if isinstance(raw, list) else re.split(r"[,;\s]+", str(raw).strip())
-        prefixes = []
-        for value in values:
-            prefix = str(value).strip()
-            if not prefix:
-                continue
-            if not re.fullmatch(r"[0-9.]+", prefix):
-                raise ValueError("Prefiksy LXC mogą zawierać tylko cyfry i kropki.")
-            if prefix not in prefixes:
-                prefixes.append(prefix)
-        return prefixes
 
     def configured_output_directory(self):
         configured = Path(os.path.expandvars(os.path.expanduser(str(self.settings["output_directory"]))))

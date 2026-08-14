@@ -75,11 +75,12 @@ nowe fingerprinty, ale odrzuca klucze znanych hostów, które uległy zmianie.
 Wygenerowane skróty trafiają domyślnie do katalogu `shortcuts`.
 Nieaktualne skróty można przenieść do datowanego podfolderu `shortcuts/_archive`.
 
-Prefiksy IP służą do wyboru właściwego adresu z `hostname -I` wewnątrz kontenera.
-Puste pole automatycznie używa puli `/24` adresu hosta Proxmox, np. host
-`192.168.0.10` oznacza preferowany prefiks `192.168.0.`. Dla nazwy DNS lub braku
-pasującego adresu wybierany jest pierwszy dostępny IPv4. Własne prefiksy można
-podać po przecinku, średniku lub spacji, np. `10.20.0., 172.16.5.`.
+Adres LXC jest wykrywany na interfejsach sieciowych skonfigurowanych w Proxmox.
+Aplikacja preferuje interfejs trasy domyślnej, następnie `net0` i kolejne
+interfejsy LXC. Mosty Dockera, VPN-y i inne interfejsy utworzone wewnątrz
+kontenera nie wpływają na wybór. Nietypowy adres można trwale nadpisać przyciskiem
+`Edytuj IP` lub dwuklikiem w kolumnie adresu. Nadpisanie zapisuje host, CTID,
+nazwę LXC i IPv4 w lokalnym configu.
 
 Każdy host Proxmox ma własny profil połączenia w formacie `użytkownik@adres:port`.
 Starszy config z tekstową listą hostów i globalnym `proxmox_user` jest migrowany
