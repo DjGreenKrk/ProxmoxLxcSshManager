@@ -2,25 +2,25 @@
 
 Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
-## 0.6.0 — w przygotowaniu
+## 0.6.0 — 2026-08-14
 
 ### Dodano
 
 - logo oraz ikonę aplikacji dla okna i pliku wykonywalnego Windows;
 - powtarzalny build pojedynczego pliku EXE przy użyciu PyInstaller;
-- skrypt tworzący przenośny pakiet ZIP z EXE, README i licencją.
-- przełącznik kompletnego trybu ciemnego obejmującego formularze, zakładki, tabelę LXC, listę hostów i dziennik; wybór jest zapamiętywany w configu.
+- skrypt tworzący przenośny pakiet ZIP z EXE, README i licencją;
+- przełącznik kompletnego trybu ciemnego obejmującego formularze, zakładki, tabelę LXC, listę hostów i dziennik; wybór jest zapamiętywany w configu;
 - przycisk bezpiecznego anulowania, który zatrzymuje pracę przed kolejnym hostem, LXC lub etapem bez przerywania aktywnej operacji w połowie.
 
 ### Zmieniono
 
-- wersja EXE zapisuje prywatny config oraz generowane skróty obok programu zamiast w tymczasowym katalogu PyInstaller.
+- wersja EXE zapisuje prywatny config oraz generowane skróty obok programu zamiast w tymczasowym katalogu PyInstaller;
 - interfejs podzielono na zakładki hostów i kontenerów, dzięki czemu tabela LXC ma więcej przestrzeni;
 - dodano nagłówek z logo, większe domyślne i minimalne okno oraz liczniki zaznaczeń;
 - operacje rozdzielono kontekstowo: klucze SSH są dostępne przy hostach, a konfiguracja i skróty wyłącznie przy kontenerach;
 - akcja zbiorcza w zakładce kontenerów nie generuje ani nie wysyła klucza na hosty; obejmuje wyłącznie konfigurację, test SSH i skróty dla zaznaczonych LXC;
 - nagłówki wszystkich sekcji są spójnie wyróżnione;
-- dziennik można teraz skopiować do schowka lub wyczyścić bez restartowania aplikacji.
+- dziennik można teraz skopiować do schowka lub wyczyścić bez restartowania aplikacji;
 - wersja EXE nie otwiera pomocniczych okien konsoli dla nieinteraktywnych poleceń SSH i `ssh-keygen`; konsola pozostaje widoczna wyłącznie wtedy, gdy SCP może wymagać wpisania hasła.
 
 ### Naprawiono
