@@ -2,7 +2,7 @@
 
 Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 
-## 0.5.0 — w przygotowaniu
+## 0.5.0 — 2026-08-14
 
 ### Dodano
 
