@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import os
 import queue
@@ -35,7 +36,7 @@ DEFAULT_SETTINGS = {
     "public_key": str(DEFAULT_PUBLIC_KEY),
     "remote_key_name": DEFAULT_REMOTE_KEY_NAME,
     "lxc_user": "root",
-    "lxc_ip_prefixes": ["192.168.1."],
+    "lxc_ip_prefixes": [],
     "remote_key_directory": "/root",
     "connect_timeout_seconds": 8,
     "output_directory": "shortcuts" if FROZEN else "../shortcuts",
@@ -49,6 +50,8 @@ for ct in $(pct list 2>/dev/null | awk 'NR > 1 {print $1}'); do
     name=$(pct config "$ct" 2>/dev/null | sed -n 's/^hostname: //p')
     [ -z "$name" ] && name="lxc-$ct"
     ip=""
+    fallback_ip=""
+    ip_source="none"
     if [ "$status" = "running" ]; then
         addresses=$(timeout __PCT_DISCOVERY_TIMEOUT__ pct exec "$ct" -- hostname -I 2>/dev/null || true)
         if [ -z "$addresses" ]; then
@@ -56,11 +59,19 @@ for ct in $(pct list 2>/dev/null | awk 'NR > 1 {print $1}'); do
         fi
         for address in $addresses; do
             case "$address" in
-                __LXC_IP_PATTERNS__) ip="$address"; break ;;
+                127.*) ;;
+                *.*.*.*) [ -z "$fallback_ip" ] && fallback_ip="$address" ;;
+            esac
+            case "$address" in
+                __LXC_IP_PATTERNS__) ip="$address"; ip_source="prefix"; break ;;
             esac
         done
+        if [ -z "$ip" ] && [ -n "$fallback_ip" ]; then
+            ip="$fallback_ip"
+            ip_source="auto"
+        fi
     fi
-    printf '%s|%s|%s|%s\n' "$ct" "$name" "$status" "$ip"
+    printf '%s|%s|%s|%s|%s\n' "$ct" "$name" "$status" "$ip" "$ip_source"
 done
 '''
 
@@ -240,6 +251,17 @@ def safe_filename_part(value):
     return value or "unnamed"
 
 
+def host_ipv4_prefix(host):
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return ""
+    if address.version != 4:
+        return ""
+    octets = str(address).split(".")
+    return ".".join(octets[:3]) + "."
+
+
 class HostDialog(simpledialog.Dialog):
     def __init__(self, parent, title, initial=None):
         self.initial = initial or {"address": "", "user": "root", "port": 22}
@@ -406,7 +428,7 @@ class ProxmoxManager(tk.Tk):
 
         ttk.Label(
             settings_frame,
-            text="Oddziel przecinkami, średnikami lub spacjami, np. 192.168.0., 10.20.0.",
+            text="Opcjonalne. Puste pole używa puli /24 hosta; kilka wartości oddziel przecinkami, średnikami lub spacjami.",
             foreground="#555555",
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
@@ -840,18 +862,23 @@ class ProxmoxManager(tk.Tk):
 
     def load_containers(self, hosts):
         timeout = self.validated_timeout()
-        ip_prefixes = self.validated_ip_prefixes()
-        ip_patterns = "|".join(f"{prefix}*" for prefix in ip_prefixes)
-        discover_script = (
-            DISCOVER_SCRIPT
-            .replace("__LXC_IP_PATTERNS__", ip_patterns)
-            .replace("__PCT_DISCOVERY_TIMEOUT__", str(PCT_DISCOVERY_TIMEOUT_SECONDS))
-        )
+        configured_prefixes = self.validated_ip_prefixes()
         records = []
 
         for host_index, host_profile in enumerate(hosts, start=1):
             host = self.host_address(host_profile)
+            host_prefix = host_ipv4_prefix(host)
+            ip_prefixes = configured_prefixes or ([host_prefix] if host_prefix else [])
+            ip_patterns = "|".join(f"{prefix}*" for prefix in ip_prefixes) or "__NO_PREFIX_MATCH__"
+            discover_script = (
+                DISCOVER_SCRIPT
+                .replace("__LXC_IP_PATTERNS__", ip_patterns)
+                .replace("__PCT_DISCOVERY_TIMEOUT__", str(PCT_DISCOVERY_TIMEOUT_SECONDS))
+            )
             self.set_progress(host_index - 1, len(hosts), f"{host_index - 1}/{len(hosts)}")
+            if not configured_prefixes:
+                mode = host_prefix or "pierwszy dostępny IPv4 (host DNS/IPv6)"
+                self.log(f"[{host}] Automatyczny wybór puli LXC: {mode}")
             self.log(f"[{host}] Ładowanie listy kontenerów…")
             result = run_ssh_script(
                 host, discover_script, host_profile["user"], host_profile["port"], timeout,
@@ -864,12 +891,15 @@ class ProxmoxManager(tk.Tk):
                 raise RuntimeError(f"Odczyt LXC z {host} zakończył się kodem {result.returncode}.")
 
             for row in output.splitlines():
-                match = re.fullmatch(r"(\d+)\|([^|]+)\|([^|]+)\|(\d+\.\d+\.\d+\.\d+)?", row.strip())
+                match = re.fullmatch(
+                    r"(\d+)\|([^|]+)\|([^|]+)\|(\d+\.\d+\.\d+\.\d+)?\|(prefix|auto|none)",
+                    row.strip(),
+                )
                 if not match:
                     if row.strip():
                         self.log(f"[{host}] Pominięto nieznaną odpowiedź: {row}")
                     continue
-                ct_id, name, status, ip = match.groups()
+                ct_id, name, status, ip, ip_source = match.groups()
                 record = {
                     "host": host,
                     "host_display": host_profile.get("name", host),
@@ -877,12 +907,20 @@ class ProxmoxManager(tk.Tk):
                     "name": name,
                     "status": status,
                     "ip": ip or "",
+                    "ip_source": ip_source,
                     "ssh": "nie sprawdzono" if status == "running" and ip else "—",
                 }
                 record["bat"] = self.shortcut_path_for(record).is_file()
                 records.append(record)
             self.set_progress(host_index, len(hosts), f"{host_index}/{len(hosts)}")
 
+        automatic = [record for record in records if record.get("ip_source") == "auto"]
+        if automatic:
+            prefix_description = ", ".join(configured_prefixes) or "automatyczna pula hosta"
+            self.log(
+                f"Automatycznie wybrano pierwszy dostępny IPv4 dla {len(automatic)} LXC, "
+                f"ponieważ nie pasował do ustawienia: {prefix_description}."
+            )
         self.log(f"Załadowano {len(records)} kontenerów. Zaznacz te, które chcesz obsłużyć.")
         self.loaded_hosts = {self.host_address(host) for host in hosts}
         self.log_queue.put(("containers", records))
@@ -1261,8 +1299,6 @@ class ProxmoxManager(tk.Tk):
                 raise ValueError("Prefiksy LXC mogą zawierać tylko cyfry i kropki.")
             if prefix not in prefixes:
                 prefixes.append(prefix)
-        if not prefixes:
-            raise ValueError("Podaj co najmniej jeden prefiks adresów LXC.")
         return prefixes
 
     def configured_output_directory(self):

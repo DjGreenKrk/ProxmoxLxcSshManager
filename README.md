@@ -75,8 +75,10 @@ Wygenerowane skróty trafiają domyślnie do katalogu `shortcuts`.
 Nieaktualne skróty można przenieść do datowanego podfolderu `shortcuts/_archive`.
 
 Prefiksy IP służą do wyboru właściwego adresu z `hostname -I` wewnątrz kontenera.
-Nie muszą należeć do tej samej sieci co host Proxmox. Kilka wartości można podać
-po przecinku, średniku lub spacji, np. `192.168.0., 10.20.0., 172.16.5.`.
+Puste pole automatycznie używa puli `/24` adresu hosta Proxmox, np. host
+`192.168.0.10` oznacza preferowany prefiks `192.168.0.`. Dla nazwy DNS lub braku
+pasującego adresu wybierany jest pierwszy dostępny IPv4. Własne prefiksy można
+podać po przecinku, średniku lub spacji, np. `10.20.0., 172.16.5.`.
 
 Każdy host Proxmox ma własny profil połączenia w formacie `użytkownik@adres:port`.
 Starszy config z tekstową listą hostów i globalnym `proxmox_user` jest migrowany

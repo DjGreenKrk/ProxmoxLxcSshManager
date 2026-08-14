@@ -21,6 +21,10 @@ Wersjonowanie projektu jest zgodne z [Semantic Versioning](https://semver.org/).
 - dziennik można teraz skopiować do schowka lub wyczyścić bez restartowania aplikacji.
 - wersja EXE nie otwiera pomocniczych okien konsoli dla nieinteraktywnych poleceń SSH i `ssh-keygen`; konsola pozostaje widoczna wyłącznie wtedy, gdy SCP może wymagać wpisania hasła.
 
+### Naprawiono
+
+- świeży config pozostawia prefiksy LXC puste i automatycznie preferuje pulę `/24` adresu hosta Proxmox; dla hostów DNS lub braku dopasowania wybiera pierwszy dostępny IPv4 i informuje o fallbacku w dzienniku.
+
 ## 0.5.0 — 2026-08-14
 
 ### Dodano

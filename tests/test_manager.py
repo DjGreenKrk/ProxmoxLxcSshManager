@@ -131,6 +131,11 @@ class SshCommandTests(unittest.TestCase):
             self.assertIn(service_manager, manager.CONFIGURE_SCRIPT)
         self.assertIn("timeout __PCT_CONFIGURATION_TIMEOUT__ pct exec", manager.CONFIGURE_SCRIPT)
 
+    def test_discovery_falls_back_when_no_prefix_matches(self):
+        self.assertIn('fallback_ip=""', manager.DISCOVER_SCRIPT)
+        self.assertIn('ip_source="auto"', manager.DISCOVER_SCRIPT)
+        self.assertIn('"$fallback_ip"', manager.DISCOVER_SCRIPT)
+
 
 class DryRunTests(unittest.TestCase):
     def test_upload_preview_does_not_call_scp_or_require_existing_key(self):
@@ -239,6 +244,10 @@ class FormattingTests(unittest.TestCase):
 
     def test_filename_part_replaces_windows_invalid_characters(self):
         self.assertEqual(manager.safe_filename_part('lxc:<test>|?*'), "lxc__test____")
+
+    def test_host_ipv4_prefix_uses_host_24_pool(self):
+        self.assertEqual(manager.host_ipv4_prefix("192.168.0.10"), "192.168.0.")
+        self.assertEqual(manager.host_ipv4_prefix("pve.example.test"), "")
 
 
 if __name__ == "__main__":
