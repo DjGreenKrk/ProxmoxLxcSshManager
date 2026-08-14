@@ -1,0 +1,48 @@
+# Proxmox LXC SSH Manager
+
+Graficzne narzędzie dla Windows do zarządzania dostępem SSH do kontenerów LXC na hostach Proxmox.
+
+Aktualna wersja: **0.1.0**
+
+## Funkcje
+
+- zarządzanie listą hostów Proxmox;
+- generowanie lokalnej pary kluczy Ed25519;
+- przesyłanie klucza publicznego na wybrane hosty;
+- pobieranie i selekcja kontenerów LXC;
+- instalowanie oraz uruchamianie serwera SSH w wybranych LXC;
+- dodawanie klucza do `authorized_keys` bez duplikatów;
+- generowanie skrótów BAT otwierających sesje SSH;
+- zapisywanie ustawień użytkownika w lokalnym pliku JSON.
+
+## Wymagania
+
+- Windows 10 lub Windows 11;
+- Python 3.10 lub nowszy z Tkinter;
+- klient OpenSSH dla Windows (`ssh.exe`, `scp.exe`, `ssh-keygen.exe`);
+- konto z dostępem SSH do hostów Proxmox;
+- polecenie `pct` na hostach Proxmox.
+
+## Uruchomienie
+
+Z katalogu projektu:
+
+```powershell
+python .\app\ProxmoxLxcSshManager.py
+```
+
+Przy pierwszym uruchomieniu aplikacja tworzy prywatny plik
+`app/ProxmoxLxcSshManager.config.json` na podstawie ustawień domyślnych.
+Plik jest pomijany przez Git, ponieważ może zawierać adresy i ścieżki użytkownika.
+
+## Podstawowy przepływ
+
+1. Dodaj i zaznacz hosty Proxmox.
+2. Wygeneruj klucz SSH albo wskaż istniejący plik publiczny.
+3. Wyślij klucz na hosty.
+4. Załaduj kontenery i zaznacz wybrane LXC.
+5. Skonfiguruj SSH i wygeneruj skróty BAT.
+
+Wygenerowane skróty trafiają domyślnie do katalogu `shortcuts`.
+
+Historia zmian znajduje się w [docs/CHANGELOG.md](docs/CHANGELOG.md), a plan rozwoju w [docs/ROADMAP.md](docs/ROADMAP.md).
